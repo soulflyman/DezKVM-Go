@@ -8,6 +8,8 @@ A mini KVM over USB device for onsite engineers to use their laptop to control h
 
 If you are looking for an IP-KVM solution, take a look at the [DezKVM](https://github.com/tobychui/DezKVM) Project!
 
+[DezKVM-Go Project Homepage](https://kvm.aroz.org/)
+
 ## Features
 
 - Small form factor , just 84 x 53 x 18mm
@@ -19,10 +21,15 @@ If you are looking for an IP-KVM solution, take a look at the [DezKVM](https://g
   - On-screen keyboard
   - Commonly used Hot-key and macros
   - Take Screenshots
+  - Screen Recorder (with support of partial screen record)
+  - Key Stacking (similar to Pi-KVM Magic-Key)
 - Advanced Settings
   - Invert mouse scroll wheel direction (for Windows / MacOS cross control)
   - Absolute / Relative mode for mouse
   - Mouse Jiggler
+  - WebGL based Image Sharpening feature (for Terminal / text based sessions)
+  - Extra gains (when remote volume is too loud / quite)
+  - Support both 9600 & 115200 configuration of CH9329
   
 ## Usage
 
@@ -98,6 +105,14 @@ Due to shortage of MS2109, the HDMI capture card market are slowly shifting towa
 In case you bought a HDMI capture card and realize it didn't fit because it is a MS2109S device, you can unscrew the metal case and use the bare PCB directly. Installation methods are as follows (notes: an additional 3D printed part and 3 x M2 x 5 screws are needed)
 
 ![gen2-diff](img/README/gen2-diff.jpg)
+
+
+
+### Generation 3 (MS2109S + PCBv2)
+
+The generation 3 uses a newly design PCB (rev2) with the MS2109S HDMI capture card main board, which make it more compact and easier to mass produce using more commonly available IC and components packages supply from other PCBA service providers. This new generation also exposed the downstream USB port for hackers to add more features to this board.
+
+![pcb_update](img/README/pcb_update.jpg)
 
 
 
