@@ -593,6 +593,311 @@ function swapCtrlCmd(keyCode) {
     return keyCode;
 }
 
+/* =======================================================================
+ * Stacked Keys
+ * Lets the user build a key combination one key at a time (press & release
+ * each key) and then send them all together in a single HID report. This
+ * makes it possible to send combos the local OS would otherwise capture
+ * itself (e.g. Ctrl + Alt + Del) without the host browser intercepting them.
+ * ===================================================================== */
+let stackKeysEnabled = true;            // master on/off for the Stacked Keys feature
+let stackKeyToggleCode = 'ShiftRight';  // e.code of the toggle key (configurable)
+let stackKeyLongPressMs = 1000;         // long-press to enter; 0 = short press enters
+let stackModeActive = false;
+let stackedKeys = [];                   // [{keyCode, location, isModifier, label}]
+let _stackToggleDown = false;
+let _stackToggleTimer = null;
+let _stackActivatedByHold = false;
+let _stackToggleModifierForwarded = false; // toggle key forwarded live as a modifier
+let _stackToggleModInfo = null;            // {keyCode, isRight} of the forwarded modifier
+const MAX_STACKED_REGULAR_KEYS = 6;     // HID report supports up to 6 simultaneous keys
+
+function setStackKeysEnabled(enabled) {
+    stackKeysEnabled = !!enabled;
+    if (!stackKeysEnabled) {
+        // Cancel any in-progress trigger or active session when disabling
+        if (_stackToggleTimer) {
+            clearTimeout(_stackToggleTimer);
+            _stackToggleTimer = null;
+        }
+        hideStackTrigger();
+        if (stackModeActive) exitStackMode(false);
+        _stackToggleDown = false;
+        _stackToggleModifierForwarded = false;
+    }
+}
+
+function setStackKeyToggle(code) {
+    if (typeof code === 'string' && code.length > 0) {
+        stackKeyToggleCode = code;
+    }
+    // Changing the toggle key cancels any in-progress stack session
+    if (stackModeActive) exitStackMode(false);
+}
+
+function setStackKeyLongPress(seconds) {
+    let s = parseFloat(seconds);
+    if (isNaN(s) || s < 0) s = 0;
+    stackKeyLongPressMs = Math.round(s * 1000);
+}
+
+function isStackToggleEvent(e) {
+    return e.code === stackKeyToggleCode;
+}
+
+function isModifierKeyName(key) {
+    return key === 'Control' || key === 'Shift' || key === 'Alt' || key === 'Meta';
+}
+
+function formatStackKeyLabel(e) {
+    const right = e.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT;
+    switch (e.key) {
+        case 'Control': return right ? 'RCtrl' : 'Ctrl';
+        case 'Shift':   return right ? 'RShift' : 'Shift';
+        case 'Alt':     return right ? 'RAlt' : 'Alt';
+        case 'Meta':    return right ? 'RWin' : 'Win';
+        case ' ':       return 'Space';
+        case 'Delete':  return 'Del';
+        case 'Escape':  return 'Esc';
+        case 'Enter':   return 'Enter';
+        case 'Tab':     return 'Tab';
+        case 'Backspace': return 'Bksp';
+        case 'ArrowUp':    return '↑';
+        case 'ArrowDown':  return '↓';
+        case 'ArrowLeft':  return '←';
+        case 'ArrowRight': return '→';
+    }
+    if (typeof e.key === 'string' && e.key.length === 1) return e.key.toUpperCase();
+    return e.key;
+}
+
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+function renderStackedKeys() {
+    const disp = document.getElementById('stackedKeysDisplay');
+    if (!disp) return;
+    let chips;
+    if (stackedKeys.length === 0) {
+        chips = '<span class="stacked-keys-empty">Press keys to stack…</span>';
+    } else {
+        chips = stackedKeys.map(k =>
+            `<span class="stacked-key-chip">${escapeHtml(k.label)}</span>`
+        ).join('');
+    }
+    disp.innerHTML =
+        '<div class="stacked-keys-title"><span class="dot"></span> Stacked Keys</div>' +
+        `<div class="stacked-keys-chips">${chips}</div>` +
+        '<div class="stacked-keys-hint">Toggle key: send · Backspace: undo · Esc: cancel</div>';
+}
+
+// Show the long-press trigger indicator and animate its fill over `duration` ms.
+function showStackTrigger(duration) {
+    const el = document.getElementById('stackTriggerIndicator');
+    if (!el) return;
+    const fill = el.querySelector('.fill');
+    el.style.display = 'block';
+    if (fill) {
+        fill.style.transition = 'none';
+        fill.style.width = '0%';
+        void fill.offsetWidth; // force reflow so the transition restarts
+        fill.style.transition = `width ${duration}ms linear`;
+        fill.style.width = '100%';
+    }
+}
+
+function hideStackTrigger() {
+    const el = document.getElementById('stackTriggerIndicator');
+    if (!el) return;
+    const fill = el.querySelector('.fill');
+    el.style.display = 'none';
+    if (fill) {
+        fill.style.transition = 'none';
+        fill.style.width = '0%';
+    }
+}
+
+function enterStackMode() {
+    stackModeActive = true;
+    stackedKeys = [];
+    renderStackedKeys();
+    const disp = document.getElementById('stackedKeysDisplay');
+    if (disp) disp.style.display = 'flex';
+}
+
+async function exitStackMode(send) {
+    const keys = stackedKeys.slice();
+    stackModeActive = false;
+    stackedKeys = [];
+    _stackActivatedByHold = false;
+    const disp = document.getElementById('stackedKeysDisplay');
+    if (disp) disp.style.display = 'none';
+    if (send && keys.length > 0) {
+        await sendStackedKeys(keys);
+    }
+}
+
+function addStackedKey(e) {
+    const isModifier = isModifierKeyName(e.key);
+    if (!isModifier) {
+        const regularCount = stackedKeys.filter(k => !k.isModifier).length;
+        if (regularCount >= MAX_STACKED_REGULAR_KEYS) {
+            $('body').toast({
+                message: `<i class="exclamation triangle icon"></i> Maximum ${MAX_STACKED_REGULAR_KEYS} non-modifier keys can be stacked`,
+                class: 'warning'
+            });
+            return;
+        }
+    }
+    stackedKeys.push({
+        keyCode: e.keyCode,
+        location: e.location,
+        isModifier: isModifier,
+        label: formatStackKeyLabel(e),
+    });
+    renderStackedKeys();
+}
+
+function undoStackedKey() {
+    stackedKeys.pop();
+    renderStackedKeys();
+}
+
+// Press all stacked keys together, then release them.
+async function sendStackedKeys(keys) {
+    if (!controller) return;
+    const mods = keys.filter(k => k.isModifier);
+    const regular = keys.filter(k => !k.isModifier).slice(0, MAX_STACKED_REGULAR_KEYS);
+    try {
+        for (const m of mods) {
+            await controller.SetModifierKey(swapCtrlCmd(m.keyCode), m.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT);
+        }
+        for (const r of regular) {
+            await controller.SendKeyboardPress(r.keyCode);
+        }
+        // Brief hold so the host registers the combination
+        await new Promise(res => setTimeout(res, 50));
+        for (const r of regular) {
+            await controller.SendKeyboardRelease(r.keyCode);
+        }
+        for (const m of mods) {
+            await controller.UnsetModifierKey(swapCtrlCmd(m.keyCode), m.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT);
+        }
+    } catch (err) {
+        console.error('Failed to send stacked keys:', err);
+    }
+}
+
+// Forward the toggle key as a normal tap (used when a short tap doesn't reach
+// the long-press threshold, so the configured key still works normally).
+async function forwardToggleKeyTap(e) {
+    if (!controller) return;
+    try {
+        if (isModifierKeyName(e.key)) {
+            const isRight = e.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT;
+            await controller.SetModifierKey(swapCtrlCmd(e.keyCode), isRight);
+            await controller.UnsetModifierKey(swapCtrlCmd(e.keyCode), isRight);
+        } else {
+            await controller.SendKeyboardPress(e.keyCode);
+            await controller.SendKeyboardRelease(e.keyCode);
+        }
+    } catch (err) {
+        // Ignore unsupported keys
+    }
+}
+
+// Returns true if the keydown was consumed by the Stacked Keys feature.
+function handleStackKeydown(e) {
+    if (!stackKeysEnabled) return false;
+    if (isStackToggleEvent(e)) {
+        e.preventDefault();
+        if (_stackToggleDown) return true; // ignore auto-repeat
+        _stackToggleDown = true;
+        if (!stackModeActive && stackKeyLongPressMs > 0) {
+            // In long-press mode the toggle key keeps working normally for short
+            // presses. If it is a modifier (e.g. Right Shift) forward it live so
+            // combos like Right Shift + letter still produce capitals.
+            if (isModifierKeyName(e.key) && controller) {
+                _stackToggleModifierForwarded = true;
+                _stackToggleModInfo = {
+                    keyCode: e.keyCode,
+                    isRight: e.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT,
+                };
+                controller.SetModifierKey(swapCtrlCmd(e.keyCode), _stackToggleModInfo.isRight).catch(() => {});
+            }
+            // Show the filling pill indicator while the long-press is in progress
+            showStackTrigger(stackKeyLongPressMs);
+            _stackToggleTimer = setTimeout(() => {
+                _stackToggleTimer = null;
+                hideStackTrigger();
+                // Release the live-forwarded modifier before entering stack mode
+                if (_stackToggleModifierForwarded && controller) {
+                    controller.UnsetModifierKey(swapCtrlCmd(_stackToggleModInfo.keyCode), _stackToggleModInfo.isRight).catch(() => {});
+                    _stackToggleModifierForwarded = false;
+                }
+                enterStackMode();
+                _stackActivatedByHold = true;
+            }, stackKeyLongPressMs);
+        }
+        return true;
+    }
+    if (stackModeActive) {
+        e.preventDefault();
+        if (e.repeat) return true;
+        if (e.key === 'Escape') {
+            exitStackMode(false);
+        } else if (e.key === 'Backspace') {
+            undoStackedKey();
+        } else {
+            addStackedKey(e);
+        }
+        return true;
+    }
+    return false;
+}
+
+// Returns true if the keyup was consumed by the Stacked Keys feature.
+function handleStackKeyup(e) {
+    if (!stackKeysEnabled) return false;
+    if (isStackToggleEvent(e)) {
+        e.preventDefault();
+        _stackToggleDown = false;
+        if (_stackToggleTimer) {
+            clearTimeout(_stackToggleTimer);
+            _stackToggleTimer = null;
+        }
+        hideStackTrigger();
+        if (stackModeActive) {
+            if (_stackActivatedByHold) {
+                // Release of the activating long-press; stay in stack mode
+                _stackActivatedByHold = false;
+            } else {
+                // Short press while in stack mode -> send the stack
+                exitStackMode(true);
+            }
+        } else if (stackKeyLongPressMs === 0) {
+            // Long-press disabled: a tap enters stack mode
+            enterStackMode();
+        } else if (_stackToggleModifierForwarded) {
+            // Short tap of a modifier toggle key -> complete its normal release
+            if (controller) {
+                controller.UnsetModifierKey(swapCtrlCmd(_stackToggleModInfo.keyCode), _stackToggleModInfo.isRight).catch(() => {});
+            }
+            _stackToggleModifierForwarded = false;
+        } else {
+            // Short tap of a non-modifier toggle key -> forward as a normal tap
+            forwardToggleKeyTap(e);
+        }
+        return true;
+    }
+    if (stackModeActive) {
+        e.preventDefault();
+        return true; // keys are recorded on keydown; swallow the keyup
+    }
+    return false;
+}
+
 // Re-request pointer lock on click when in relative mode
 videoOverlayElement.addEventListener('click', function () {
     if (!controller.Config.AbsoluteMode && document.pointerLockElement !== videoOverlayElement) {
@@ -665,6 +970,10 @@ window.addEventListener('keydown', async (e) => {
     // Skip HID forwarding when typing in input fields
     if (isTypingInInput(e)) return;
 
+    // Stacked Keys interception (must run before Ctrl+V passthrough so that
+    // keys can be stacked even when a modifier is part of the combination)
+    if (handleStackKeydown(e)) return;
+
     // Allow Ctrl+V to be handled by paste-box.js
     if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
         return; // Don't prevent default, let paste event fire
@@ -689,6 +998,9 @@ window.addEventListener('keydown', async (e) => {
 window.addEventListener('keyup', async (e) => {
     // Skip HID forwarding when typing in input fields
     if (isTypingInInput(e)) return;
+
+    // Stacked Keys interception
+    if (handleStackKeyup(e)) return;
 
     // Allow Ctrl+V to be handled by paste-box.js
     if ((e.ctrlKey || e.metaKey) && e.key === 'v') {
@@ -1023,7 +1335,12 @@ async function startStream() {
                 // Create audio context for processing
                 window.kvmAudioContext = new AudioContext({ sampleRate: 96000 });
                 const source = window.kvmAudioContext.createMediaStreamSource(audioStream);
-                
+
+                // Extra Gain: boost quiet capture card audio sources
+                window.kvmGainNode = window.kvmAudioContext.createGain();
+                const initialGain = (typeof extraGain === 'number' && !isNaN(extraGain)) ? extraGain : 1.0;
+                window.kvmGainNode.gain.value = initialGain;
+
                 // Add audio worklet processor for channel splitting
                 await window.kvmAudioContext.audioWorklet.addModule('data:application/javascript;charset=utf8,' + encodeURIComponent(`
                     class SplitProcessor extends AudioWorkletProcessor {
@@ -1057,7 +1374,8 @@ async function startStream() {
                     numberOfInputs: 1,
                     numberOfOutputs: 1,
                 });
-                source.connect(processor);
+                source.connect(window.kvmGainNode);
+                window.kvmGainNode.connect(processor);
                 processor.connect(window.kvmAudioContext.destination);
 
                 console.log('Audio stream started successfully');
@@ -1386,6 +1704,21 @@ function updateCapturePropertiesTable() {
     if (settings.aspectRatio) addRow('Aspect Ratio', settings.aspectRatio.toFixed(4));
     if (capabilities.width) addRow('Max Resolution', capabilities.width.max + ' × ' + capabilities.height.max);
     if (capabilities.frameRate) addRow('Max Frame Rate', capabilities.frameRate.max + ' fps');
+}
+
+// Extra audio gain (multiplier) applied to the capture card audio feed.
+// Useful for devices whose source audio output is quiet.
+var extraGain = 1.0;
+function setExtraGain(value) {
+    let gain = parseFloat(value);
+    if (isNaN(gain)) gain = 1.0;
+    gain = Math.max(0, Math.min(3, gain));
+    extraGain = gain;
+    if (window.kvmGainNode && window.kvmAudioContext) {
+        // Ramp smoothly to avoid audible clicks/pops on change
+        const now = window.kvmAudioContext.currentTime;
+        window.kvmGainNode.gain.setTargetAtTime(extraGain, now, 0.02);
+    }
 }
 
 // Toggle audio enable/disable
