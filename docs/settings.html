@@ -212,6 +212,9 @@
                 <a class="item" data-tab="keyboard-mouse">
                     <i class="keyboard icon"></i> Keyboard &amp; Mouse
                 </a>
+                <a class="item" data-tab="hotkeys">
+                    <i class="bolt icon"></i> Hotkeys
+                </a>
                 <a class="item" data-tab="advanced">
                     <i class="cogs icon"></i> Advanced
                 </a>
@@ -274,6 +277,13 @@
                         <label>Enable audio</label>
                     </div>
                 </div>
+
+                <div class="settings-field">
+                    <label>Extra Gain</label>
+                    <p class="field-description">Adjust the gain of the audio feed for capture cards with a quiet (or too loud) source audio output. 1.0x is the original volume; below 1.0x attenuates, above 1.0x amplifies. Note: setting the gain too high may cause clipping/distortion.</p>
+                    <br>
+                    <div id="extraGainSlider" class="ui labeled ticked slider"></div>
+                </div>
             </div>
 
             <!-- Keyboard & Mouse -->
@@ -335,6 +345,44 @@
                         <input type="checkbox" id="chkSettingsAskOnPaste" class="auto-save-setting" onchange="toggleAskOnPaste()" checked>
                         <label>Ask on paste</label>
                     </div>
+                </div>
+            </div>
+
+            <!-- Hotkeys -->
+            <div class="settings-tab-content" data-tab="hotkeys">
+                <h3 class="ui header">
+                    <i class="bolt icon"></i>
+                    <div class="content">Hotkeys</div>
+                </h3>
+                <div class="ui divider"></div>
+
+                <div class="settings-field">
+                    <label>Stacked Keys</label>
+                    <p class="field-description">Build a combo one key at a time and send it together, for combos the OS captures itself (e.g. Ctrl + Alt + Del).</p>
+                    <div class="ui toggle checkbox" id="stackKeysEnabledCheckbox">
+                        <input type="checkbox" id="chkSettingsStackKeysEnabled" class="auto-save-setting" onchange="toggleStackKeysEnabled()" checked>
+                        <label>Enable stacked keys</label>
+                    </div>
+                </div>
+
+                <div class="settings-field">
+                    <label>Stack Key Toggle</label>
+                    <p class="field-description">Key used to enter and send stacked keys. Pick an uncommonly used key.</p>
+                    <select id="stackKeyToggleDropdown" class="ui dropdown auto-save-setting" onchange="onStackKeyToggleChange()">
+                        <option value="ShiftRight">Right Shift</option>
+                        <option value="ControlRight">Right Ctrl</option>
+                        <option value="AltRight">Right Alt</option>
+                        <option value="ContextMenu">Menu</option>
+                        <option value="Pause">Pause / Break</option>
+                        <option value="ScrollLock">Scroll Lock</option>
+                    </select>
+                </div>
+
+                <div class="settings-field">
+                    <label>Stack Key Long Press Duration</label>
+                    <p class="field-description">How long to hold the toggle key to enter stack mode. Set to 0 to disable long press (a short press will trigger stack mode instead).</p>
+                    <br>
+                    <div id="stackKeyLongPressSlider" class="ui labeled ticked slider"></div>
                 </div>
             </div>
 
@@ -433,6 +481,7 @@
 // Settings Template - defines all available settings with defaults
 const SETTINGS_TEMPLATE = {
     enableAudio: true,
+    extraGain: 1.0,
     showLocalCursor: true,
     invertScrollwheel: false,
     relativeMouseMode: false,
@@ -442,7 +491,10 @@ const SETTINGS_TEMPLATE = {
     relativeMouseSensitivity: 1.0,
     baudrate: 115200,
     saveToLocalStorage: true,
-    imageSharpening: false
+    imageSharpening: false,
+    stackKeysEnabled: true,
+    stackKeyToggle: 'ShiftRight',
+    stackKeyLongPress: 1.0
 };
 
 const SETTINGS_KEY = 'dezkvm_settings';
@@ -461,13 +513,58 @@ function initalizeUIElements(){
             setTimeout(saveSettingsToLocalStorage, 50);
         }
     });
+
+    $('#extraGainSlider').slider({
+        min: 0.5,
+        max: 3,
+        start: 1,
+        step: 0.25,
+        onChange: function(value) {
+            if (typeof setExtraGain === 'function') {
+                setExtraGain(value);
+            }
+            setTimeout(saveSettingsToLocalStorage, 50);
+        }
+    });
+
+    $('#stackKeyLongPressSlider').slider({
+        min: 0,
+        max: 5,
+        start: 1,
+        step: 0.5,
+        onChange: function(value) {
+            if (typeof setStackKeyLongPress === 'function') {
+                setStackKeyLongPress(value);
+            }
+            setTimeout(saveSettingsToLocalStorage, 50);
+        }
+    });
+
+    $('#stackKeyToggleDropdown').dropdown();
 }
 initalizeUIElements();
+
+function toggleStackKeysEnabled() {
+    const chk = document.getElementById('chkSettingsStackKeysEnabled');
+    const enabled = chk ? chk.checked : true;
+    if (typeof setStackKeysEnabled === 'function') {
+        setStackKeysEnabled(enabled);
+    }
+}
+
+// Stack key toggle dropdown change handler
+function onStackKeyToggleChange() {
+    const value = document.getElementById('stackKeyToggleDropdown')?.value;
+    if (value && typeof setStackKeyToggle === 'function') {
+        setStackKeyToggle(value);
+    }
+}
 
 // Get current settings from UI
 function getCurrentSettings() {
     const settings = {};
     settings.enableAudio = document.getElementById('chkSettingsEnableAudio')?.checked ?? SETTINGS_TEMPLATE.enableAudio;
+    settings.extraGain = (typeof extraGain !== 'undefined') ? extraGain : SETTINGS_TEMPLATE.extraGain;
     settings.showLocalCursor = document.getElementById('chkSettingsShowLocalCursor')?.checked ?? SETTINGS_TEMPLATE.showLocalCursor;
     settings.invertScrollwheel = document.getElementById('chkSettingsInvertScrollwheel')?.checked ?? SETTINGS_TEMPLATE.invertScrollwheel;
     settings.relativeMouseMode = document.getElementById('chkSettingsRelativeMouseMode')?.checked ?? SETTINGS_TEMPLATE.relativeMouseMode;
@@ -475,7 +572,10 @@ function getCurrentSettings() {
     settings.askOnPaste = document.getElementById('chkSettingsAskOnPaste')?.checked ?? SETTINGS_TEMPLATE.askOnPaste;
     settings.relativeMouseSensitivity = (typeof relativeMouseSensitivity !== 'undefined') ? relativeMouseSensitivity : SETTINGS_TEMPLATE.relativeMouseSensitivity;
     settings.imageSharpening = document.getElementById('chkSettingsImageSharpening')?.checked ?? SETTINGS_TEMPLATE.imageSharpening;
-    
+    settings.stackKeysEnabled = document.getElementById('chkSettingsStackKeysEnabled')?.checked ?? SETTINGS_TEMPLATE.stackKeysEnabled;
+    settings.stackKeyToggle = (typeof stackKeyToggleCode !== 'undefined') ? stackKeyToggleCode : SETTINGS_TEMPLATE.stackKeyToggle;
+    settings.stackKeyLongPress = (typeof stackKeyLongPressMs !== 'undefined') ? (stackKeyLongPressMs / 1000) : SETTINGS_TEMPLATE.stackKeyLongPress;
+
     // Get selected baudrate
     const baudrateRadio = document.querySelector('input[name="baudrate"]:checked');
     settings.baudrate = baudrateRadio ? parseInt(baudrateRadio.value) : SETTINGS_TEMPLATE.baudrate;
@@ -542,7 +642,15 @@ function applySettingsToUI(settings) {
             }
         }
     }
-    
+
+    // Apply extra gain
+    if (settings.hasOwnProperty('extraGain')) {
+        if (typeof setExtraGain === 'function') {
+            setExtraGain(settings.extraGain);
+        }
+        $('#extraGainSlider').slider('set value', settings.extraGain);
+    }
+
     // Apply show local cursor
     const cursorChk = document.getElementById('chkSettingsShowLocalCursor');
     if (cursorChk && settings.hasOwnProperty('showLocalCursor')) {
@@ -648,7 +756,33 @@ function applySettingsToUI(settings) {
             }
         }
     }
-    
+
+    // Apply stacked keys enabled
+    const stackChk = document.getElementById('chkSettingsStackKeysEnabled');
+    if (stackChk && settings.hasOwnProperty('stackKeysEnabled')) {
+        stackChk.checked = settings.stackKeysEnabled;
+        $('#stackKeysEnabledCheckbox').checkbox(settings.stackKeysEnabled ? 'check' : 'uncheck');
+        if (typeof setStackKeysEnabled === 'function') {
+            setStackKeysEnabled(settings.stackKeysEnabled);
+        }
+    }
+
+    // Apply stack key toggle
+    if (settings.hasOwnProperty('stackKeyToggle')) {
+        if (typeof setStackKeyToggle === 'function') {
+            setStackKeyToggle(settings.stackKeyToggle);
+        }
+        $('#stackKeyToggleDropdown').dropdown('set selected', settings.stackKeyToggle);
+    }
+
+    // Apply stack key long press duration
+    if (settings.hasOwnProperty('stackKeyLongPress')) {
+        if (typeof setStackKeyLongPress === 'function') {
+            setStackKeyLongPress(settings.stackKeyLongPress);
+        }
+        $('#stackKeyLongPressSlider').slider('set value', settings.stackKeyLongPress);
+    }
+
     console.log('Settings applied to UI');
 }
 
@@ -708,6 +842,7 @@ if(typeof $ !== 'undefined' && $.fn.checkbox){
     $('#askOnPasteCheckbox').checkbox();
     $('#saveSettingsCheckbox').checkbox();
     $('#imageSharpeningCheckbox').checkbox();
+    $('#stackKeysEnabledCheckbox').checkbox();
 }
 
 /* Tab switching */
