@@ -671,6 +671,10 @@ function formatStackKeyLabel(e) {
     return e.key;
 }
 
+function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 function renderStackedKeys() {
     const disp = document.getElementById('stackedKeysDisplay');
     if (!disp) return;
@@ -679,7 +683,7 @@ function renderStackedKeys() {
         chips = '<span class="stacked-keys-empty">Press keys to stack…</span>';
     } else {
         chips = stackedKeys.map(k =>
-            `<span class="stacked-key-chip">${k.label}</span>`
+            `<span class="stacked-key-chip">${escapeHtml(k.label)}</span>`
         ).join('');
     }
     disp.innerHTML =
@@ -1334,7 +1338,8 @@ async function startStream() {
 
                 // Extra Gain: boost quiet capture card audio sources
                 window.kvmGainNode = window.kvmAudioContext.createGain();
-                window.kvmGainNode.gain.value = extraGain;
+                const initialGain = (typeof extraGain === 'number' && !isNaN(extraGain)) ? extraGain : 1.0;
+                window.kvmGainNode.gain.value = initialGain;
 
                 // Add audio worklet processor for channel splitting
                 await window.kvmAudioContext.audioWorklet.addModule('data:application/javascript;charset=utf8,' + encodeURIComponent(`
@@ -1703,12 +1708,12 @@ function updateCapturePropertiesTable() {
 
 // Extra audio gain (multiplier) applied to the capture card audio feed.
 // Useful for devices whose source audio output is quiet.
-let extraGain = 1.0;
+var extraGain = 1.0;
 function setExtraGain(value) {
-    extraGain = parseFloat(value);
-    if (isNaN(extraGain) || extraGain < 0) {
-        extraGain = 1.0;
-    }
+    let gain = parseFloat(value);
+    if (isNaN(gain)) gain = 1.0;
+    gain = Math.max(0, Math.min(3, gain));
+    extraGain = gain;
     if (window.kvmGainNode && window.kvmAudioContext) {
         // Ramp smoothly to avoid audible clicks/pops on change
         const now = window.kvmAudioContext.currentTime;

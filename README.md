@@ -28,7 +28,7 @@ If you are looking for an IP-KVM solution, take a look at the [DezKVM](https://g
   - Absolute / Relative mode for mouse
   - Mouse Jiggler
   - WebGL based Image Sharpening feature (for Terminal / text based sessions)
-  - Extra gains (when remote volume is too loud / quite)
+  - Extra gain (when remote volume is too loud / quiet)
   - Support both 9600 & 115200 configuration of CH9329
   
 ## Usage
@@ -110,7 +110,7 @@ In case you bought a HDMI capture card and realize it didn't fit because it is a
 
 ### Generation 3 (MS2109S + PCBv2)
 
-The generation 3 uses a newly design PCB (rev2) with the MS2109S HDMI capture card main board, which make it more compact and easier to mass produce using more commonly available IC and components packages supply from other PCBA service providers. This new generation also exposed the downstream USB port for hackers to add more features to this board.
+The generation 3 uses a newly designed PCB (rev2) with the MS2109S HDMI capture card main board, which makes it more compact and easier to mass-produce using more commonly available ICs and component packages from other PCBA service providers. This new generation also exposes the downstream USB port for hackers to add more features to this board.
 
 ![pcb_update](img/README/pcb_update.jpg)
 

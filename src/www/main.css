@@ -515,7 +515,7 @@ body {
     z-index: 9999;
 }
 
-/* Stacked Keys display (top-right corner) */
+/* Stacked Keys display (bottom-left corner) */
 #stackedKeysDisplay {
     display: none;
     position: fixed;

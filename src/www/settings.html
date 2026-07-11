@@ -544,14 +544,12 @@ function initalizeUIElements(){
 }
 initalizeUIElements();
 
-// Stacked keys enable/disable toggle handler
 function toggleStackKeysEnabled() {
     const chk = document.getElementById('chkSettingsStackKeysEnabled');
     const enabled = chk ? chk.checked : true;
     if (typeof setStackKeysEnabled === 'function') {
         setStackKeysEnabled(enabled);
     }
-    setTimeout(saveSettingsToLocalStorage, 50);
 }
 
 // Stack key toggle dropdown change handler
@@ -560,7 +558,6 @@ function onStackKeyToggleChange() {
     if (value && typeof setStackKeyToggle === 'function') {
         setStackKeyToggle(value);
     }
-    setTimeout(saveSettingsToLocalStorage, 50);
 }
 
 // Get current settings from UI
