@@ -1236,12 +1236,23 @@ function findDevice(devices, type, vid, pid) {
     const pattern = new RegExp(`\\(${vid}:${pid}\\)\\s*$`, 'i');
     const found = devices.find(x => x.kind === type && pattern.test(x.label));
     if (found) {
-        return found;
+        return { device: found, exact: true };
+    }
+
+    // Some host drivers (e.g. RaspiOS/V4L2 on Argon ONE UP CM5, see #8) don't pass the
+    // USB vid:pid through to the browser at all, labeling the device as just "2109 (V4L2)"
+    // or "2109 Analog Stereo". Fall back to matching the PID alone in the label.
+    const pidOnly = devices.find(x => x.kind === type && new RegExp(pid, 'i').test(x.label));
+    if (pidOnly) {
+        return { device: pidOnly, exact: false };
     }
 
     // Temporary workaround for #1 - not sure why this check can't pass Ubuntu 26.04 Chrome
     if (isLinuxChromium()) {
-        return devices.find(x => x.kind === type) || null;
+        const anyDevice = devices.find(x => x.kind === type);
+        if (anyDevice) {
+            return { device: anyDevice, exact: false };
+        }
     }
     return null;
 }
@@ -1258,10 +1269,14 @@ async function startStream() {
         ]
         let videoDevice = null;
         let audioDevice = null;
+        let fuzzyMatch = false;
         for (const { vid, pid, product } of supportedVidPidPairs) {
-            videoDevice = findDevice(devices, 'videoinput', vid, pid);
-            audioDevice = findDevice(devices, 'audioinput', vid, pid);
-            if (videoDevice && audioDevice) {
+            const videoMatch = findDevice(devices, 'videoinput', vid, pid);
+            const audioMatch = findDevice(devices, 'audioinput', vid, pid);
+            if (videoMatch && audioMatch) {
+                videoDevice = videoMatch.device;
+                audioDevice = audioMatch.device;
+                fuzzyMatch = !videoMatch.exact || !audioMatch.exact;
                 console.log(`Found video device with VID:PID ${vid}:${pid}`);
                 productId = product;
                 break;
@@ -1282,6 +1297,15 @@ async function startStream() {
 
         if (!audioDevice) {
             console.warn('MS2109 audio device not found');
+        }
+
+        if (fuzzyMatch) {
+            // See #1: some host drivers (RaspiOS/V4L2) don't expose the vid:pid in the
+            // device label, so the device was matched by PID substring / heuristic only.
+            console.warn(`Video/audio device VID:PID could not be confirmed from the device label (label was "${videoDevice.label}"). Matched by fallback heuristic - this may not be the correct capture device.`);
+            $('body').toast({
+                message: '<i class="yellow warning sign icon"></i> Capture device VID:PID could not be confirmed. If this is the wrong device, please disconnect other v4l2 devices and reload the page.'
+            });
         }
 
         // Try different video modes
