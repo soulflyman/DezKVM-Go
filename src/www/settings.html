@@ -252,6 +252,42 @@
                     </button>
                 </div>
 
+                <!-- AI-assisted addition -->
+                <div class="settings-field">
+                    <label>Video Scaling</label>
+                    <p class="field-description">Choose how the video feed is sized within the window.</p>
+                    <div class="ui form" style="margin-top: 8px;">
+                        <div class="grouped fields" style="margin: 0;">
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" name="videoScaling" value="fill" id="videoScalingFill" class="auto-save-setting" onchange="setVideoScalingMode('fill')" checked>
+                                    <label for="videoScalingFill">Fill window (stretch to fit, may scale up)</label>
+                                </div>
+                            </div>
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" name="videoScaling" value="fit" id="videoScalingFit" class="auto-save-setting" onchange="setVideoScalingMode('fit')">
+                                    <label for="videoScalingFit">Fit window (scale down only, no upscaling)</label>
+                                </div>
+                            </div>
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" name="videoScaling" value="native" id="videoScalingNative" class="auto-save-setting" onchange="setVideoScalingMode('native')">
+                                    <label for="videoScalingNative">1:1 (native resolution, scroll if larger than window)</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI-assisted addition -->
+                <div class="settings-field">
+                    <label>Color Saturation</label>
+                    <p class="field-description">Boost or reduce color saturation — useful for capture cards with washed-out colors (common on cheap HDMI-to-USB adapters). 1.0 is unmodified. This is a global adjustment, not per-color correction, so pushing it too high can over-saturate colors that were already fine.</p>
+                    <br>
+                    <div id="colorSaturationSlider" class="ui labeled ticked slider"></div>
+                </div>
+
                 <div class="settings-field">
                     <label>Fullscreen</label>
                     <p class="field-description">Enter or exit browser fullscreen mode.</p>
@@ -503,7 +539,9 @@ const SETTINGS_TEMPLATE = {
     imageSharpening: false,
     stackKeysEnabled: true,
     stackKeyToggle: 'ShiftRight',
-    stackKeyLongPress: 1.0
+    stackKeyLongPress: 1.0,
+    videoScalingMode: 'fill',
+    colorSaturation: 1.0
 };
 
 const SETTINGS_KEY = 'dezkvm_settings';
@@ -531,6 +569,20 @@ function initalizeUIElements(){
         onChange: function(value) {
             if (typeof setExtraGain === 'function') {
                 setExtraGain(value);
+            }
+            setTimeout(saveSettingsToLocalStorage, 50);
+        }
+    });
+
+    // AI-assisted addition
+    $('#colorSaturationSlider').slider({
+        min: 0.5,
+        max: 3,
+        start: 1,
+        step: 0.1,
+        onChange: function(value) {
+            if (typeof setColorSaturation === 'function') {
+                setColorSaturation(value);
             }
             setTimeout(saveSettingsToLocalStorage, 50);
         }
@@ -584,6 +636,8 @@ function getCurrentSettings() {
     settings.stackKeysEnabled = document.getElementById('chkSettingsStackKeysEnabled')?.checked ?? SETTINGS_TEMPLATE.stackKeysEnabled;
     settings.stackKeyToggle = (typeof stackKeyToggleCode !== 'undefined') ? stackKeyToggleCode : SETTINGS_TEMPLATE.stackKeyToggle;
     settings.stackKeyLongPress = (typeof stackKeyLongPressMs !== 'undefined') ? (stackKeyLongPressMs / 1000) : SETTINGS_TEMPLATE.stackKeyLongPress;
+    settings.videoScalingMode = (typeof videoScalingMode !== 'undefined') ? videoScalingMode : SETTINGS_TEMPLATE.videoScalingMode;
+    settings.colorSaturation = (typeof colorSaturation !== 'undefined') ? colorSaturation : SETTINGS_TEMPLATE.colorSaturation;
 
     // Get selected baudrate
     const baudrateRadio = document.querySelector('input[name="baudrate"]:checked');
@@ -790,6 +844,23 @@ function applySettingsToUI(settings) {
             setStackKeyLongPress(settings.stackKeyLongPress);
         }
         $('#stackKeyLongPressSlider').slider('set value', settings.stackKeyLongPress);
+    }
+
+    // AI-assisted addition: apply video scaling mode
+    if (settings.hasOwnProperty('videoScalingMode')) {
+        const scalingRadio = document.querySelector(`input[name="videoScaling"][value="${settings.videoScalingMode}"]`);
+        if (scalingRadio) scalingRadio.checked = true;
+        if (typeof setVideoScalingMode === 'function') {
+            setVideoScalingMode(settings.videoScalingMode);
+        }
+    }
+
+    // AI-assisted addition: apply color saturation
+    if (settings.hasOwnProperty('colorSaturation')) {
+        if (typeof setColorSaturation === 'function') {
+            setColorSaturation(settings.colorSaturation);
+        }
+        $('#colorSaturationSlider').slider('set value', settings.colorSaturation);
     }
 
     console.log('Settings applied to UI');

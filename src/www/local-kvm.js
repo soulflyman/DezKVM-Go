@@ -227,7 +227,11 @@ function resizeTouchscreenToVideo() {
             offsetY = rect.top + (rect.height - displayHeight) / 2;
         }
 
-        touchscreen.style.position = 'absolute';
+        // AI-assisted fix: 'fixed' (not 'absolute') so this stays in the same
+        // viewport-relative coordinate space as getBoundingClientRect() above, which
+        // matters once the page can scroll (see the "1:1 native resolution" video scaling
+        // mode). No behavior change while the page can't scroll (the previous default).
+        touchscreen.style.position = 'fixed';
         touchscreen.style.left = offsetX + 'px';
         touchscreen.style.top = offsetY + 'px';
         touchscreen.style.width = displayWidth + 'px';
@@ -241,6 +245,12 @@ function resizeTouchscreenToVideo() {
 window.addEventListener('resize', resizeTouchscreenToVideo);
 window.addEventListener('DOMContentLoaded', resizeTouchscreenToVideo);
 setTimeout(resizeTouchscreenToVideo, 1000); // Also after 1s to ensure video is loaded
+
+// AI-assisted addition: the touch overlay uses 'fixed' positioning computed from
+// getBoundingClientRect() (viewport-relative). Fixed elements don't move with page scroll,
+// so once the "1:1 native resolution" scaling mode makes the page scrollable, the overlay
+// would go stale as soon as the user scrolls unless it's recomputed on every scroll event.
+window.addEventListener('scroll', resizeTouchscreenToVideo, { passive: true });
 
 class HIDController {
     constructor() {
@@ -1944,6 +1954,46 @@ function setExtraGain(value) {
         const now = window.kvmAudioContext.currentTime;
         window.kvmGainNode.gain.setTargetAtTime(extraGain, now, 0.02);
     }
+}
+
+// AI-assisted addition: video scaling mode, selectable from Settings > Display.
+// 'fill' (default) always stretches to the container width (matches the pre-existing
+// behavior); 'fit' scales down only if the native stream is larger than the viewport,
+// never upscaling; 'native' always shows the video at exact 1:1 pixel size.
+let videoScalingMode = 'fill';
+function setVideoScalingMode(mode) {
+    if (mode !== 'fill' && mode !== 'fit' && mode !== 'native') mode = 'fill';
+    videoScalingMode = mode;
+    const video = document.getElementById('video');
+    if (video) {
+        video.classList.remove('video-scale-fill', 'video-scale-fit', 'video-scale-native');
+        video.classList.add('video-scale-' + mode);
+    }
+    document.body.classList.toggle('video-scroll', mode === 'native');
+    // The video's rendered box size/position just changed - realign the touch-input
+    // overlay (see resizeTouchscreenToVideo()) once the browser has applied the new CSS.
+    requestAnimationFrame(() => {
+        if (typeof resizeTouchscreenToVideo === 'function') resizeTouchscreenToVideo();
+    });
+}
+
+// AI-assisted addition: global saturation "hack" for capture cards with washed-out colors
+// (see #11 discussion - cheap HDMI-to-USB capture chips can under-saturate some hues).
+// Applied as a CSS filter to both the raw <video> element and the image-sharpening overlay
+// canvas (#sharpenCanvas, see initSharpeningPipeline() below) so it takes effect regardless
+// of whether sharpening is enabled. This is a global boost, not per-hue color correction -
+// pushing it too high risks over-saturating hues that were already fine.
+let colorSaturation = 1.0;
+function setColorSaturation(value) {
+    let sat = parseFloat(value);
+    if (isNaN(sat)) sat = 1.0;
+    sat = Math.max(0.5, Math.min(3, sat));
+    colorSaturation = sat;
+    const filterValue = sat === 1 ? 'none' : `saturate(${sat})`;
+    const video = document.getElementById('video');
+    const sharpenCanvas = document.getElementById('sharpenCanvas');
+    if (video) video.style.filter = filterValue;
+    if (sharpenCanvas) sharpenCanvas.style.filter = filterValue;
 }
 
 // Toggle audio enable/disable
