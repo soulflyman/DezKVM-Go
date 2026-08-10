@@ -561,6 +561,17 @@ class HIDController {
         await this._releaseHidOpcode(hid);
     }
 
+    // AI-assisted addition: press/release by raw USB HID opcode, for callers that already
+    // know exactly which physical key they want (e.g. a per-layout character table for
+    // paste-to-remote, see paste-box.js) without needing a fake KeyboardEvent.code string.
+    async SendKeyboardPressOpcode(hid) {
+        await this._pressHidOpcode(hid, '0x' + hid.toString(16));
+    }
+
+    async SendKeyboardReleaseOpcode(hid) {
+        await this._releaseHidOpcode(hid);
+    }
+
     // Send the current key combinations (modifiers + up to 6 keys)
     async keyboardSendKeyCombinations() {
         const packet = [
@@ -2428,6 +2439,14 @@ function toggleCtrlCmdSwap() {
 
 // Ask on Paste flag (toggled from settings.html)
 let askOnPasteEnabled = false;
+
+// AI-assisted addition: remote keyboard layout used by paste-box.js to translate pasted
+// text into the correct physical keys (see PASTE_LAYOUTS in paste-box.js). Defaults to 'us'
+// so existing behavior is unchanged unless the user explicitly picks a different layout.
+let pasteKeyboardLayout = 'us';
+function setPasteKeyboardLayout(layout) {
+    pasteKeyboardLayout = layout;
+}
 
 // Toggle ask on paste
 function toggleAskOnPaste() {

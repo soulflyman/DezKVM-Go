@@ -10,31 +10,111 @@ const PASTE_BOX_MAX_CHARS = 1000;
 let pasteBoxActive = false;
 let pasteCancelled = false;
 
-const charToKeyCode = {
-    '0': 48, '1': 49, '2': 50, '3': 51, '4': 52,
-    '5': 53, '6': 54, '7': 55, '8': 56, '9': 57,
-    'a': 65, 'b': 66, 'c': 67, 'd': 68, 'e': 69,
-    'f': 70, 'g': 71, 'h': 72, 'i': 73, 'j': 74,
-    'k': 75, 'l': 76, 'm': 77, 'n': 78, 'o': 79,
-    'p': 80, 'q': 81, 'r': 82, 's': 83, 't': 84,
-    'u': 85, 'v': 86, 'w': 87, 'x': 88, 'y': 89, 'z': 90,
-    '!': {keycode: 49, shift: true}, '@': {keycode: 50, shift: true},
-    '#': {keycode: 51, shift: true}, '$': {keycode: 52, shift: true},
-    '%': {keycode: 53, shift: true}, '^': {keycode: 54, shift: true},
-    '&': {keycode: 55, shift: true}, '*': {keycode: 56, shift: true},
-    '(': {keycode: 57, shift: true}, ')': {keycode: 48, shift: true},
-    ' ': 32, '-': 189, '_': {keycode: 189, shift: true},
-    '=': 187, '+': {keycode: 187, shift: true},
-    '[': 219, '{': {keycode: 219, shift: true},
-    ']': 221, '}': {keycode: 221, shift: true},
-    '\\': 220, '|': {keycode: 220, shift: true},
-    ';': 186, ':': {keycode: 186, shift: true},
-    "'": 222, '"': {keycode: 222, shift: true},
-    ',': 188, '<': {keycode: 188, shift: true},
-    '.': 190, '>': {keycode: 190, shift: true},
-    '/': 191, '?': {keycode: 191, shift: true},
-    '`': 192, '~': {keycode: 192, shift: true},
-    '\n': 13, '\t': 9
+// AI-assisted addition: USB HID Keyboard/Keypad Usage Table (Page 0x07) opcodes, named for
+// readability - same values used by HIDController.codeToHIDOpcode() in local-kvm.js.
+const HID_OP = {
+    A: 0x04, B: 0x05, C: 0x06, D: 0x07, E: 0x08, F: 0x09, G: 0x0A, H: 0x0B,
+    I: 0x0C, J: 0x0D, K: 0x0E, L: 0x0F, M: 0x10, N: 0x11, O: 0x12, P: 0x13,
+    Q: 0x14, R: 0x15, S: 0x16, T: 0x17, U: 0x18, V: 0x19, W: 0x1A, X: 0x1B,
+    Y: 0x1C, Z: 0x1D,
+    D1: 0x1E, D2: 0x1F, D3: 0x20, D4: 0x21, D5: 0x22, D6: 0x23, D7: 0x24, D8: 0x25, D9: 0x26, D0: 0x27,
+    ENTER: 0x28, TAB: 0x2B, SPACE: 0x2C,
+    MINUS: 0x2D, EQUAL: 0x2E, BRACKET_LEFT: 0x2F, BRACKET_RIGHT: 0x30, BACKSLASH: 0x31,
+    SEMICOLON: 0x33, QUOTE: 0x34, BACKQUOTE: 0x35, COMMA: 0x36, PERIOD: 0x37, SLASH: 0x38,
+    INTL_BACKSLASH: 0x64, // ISO extra key between Left Shift and Z (German/European '<>|')
+};
+
+// AI-assisted addition: per-remote-keyboard-layout character tables, replacing the old
+// single US-only charToKeyCode table. Each entry is { opcode, shift, altgr } - the physical
+// HID key plus which modifier(s) to hold - because the *character produced* by a given
+// physical key depends entirely on the remote OS's own configured layout, exactly like live
+// keyboard forwarding (see codeToHIDOpcode() in local-kvm.js). Selected via the "Paste
+// Keyboard Layout" setting (pasteKeyboardLayout global, set from settings.html).
+const PASTE_LAYOUTS = {
+    // US QWERTY - functionally identical to the old charToKeyCode table, just opcode-based.
+    us: {
+        '0': { opcode: HID_OP.D0 }, '1': { opcode: HID_OP.D1 }, '2': { opcode: HID_OP.D2 },
+        '3': { opcode: HID_OP.D3 }, '4': { opcode: HID_OP.D4 }, '5': { opcode: HID_OP.D5 },
+        '6': { opcode: HID_OP.D6 }, '7': { opcode: HID_OP.D7 }, '8': { opcode: HID_OP.D8 },
+        '9': { opcode: HID_OP.D9 },
+        'a': { opcode: HID_OP.A }, 'b': { opcode: HID_OP.B }, 'c': { opcode: HID_OP.C },
+        'd': { opcode: HID_OP.D }, 'e': { opcode: HID_OP.E }, 'f': { opcode: HID_OP.F },
+        'g': { opcode: HID_OP.G }, 'h': { opcode: HID_OP.H }, 'i': { opcode: HID_OP.I },
+        'j': { opcode: HID_OP.J }, 'k': { opcode: HID_OP.K }, 'l': { opcode: HID_OP.L },
+        'm': { opcode: HID_OP.M }, 'n': { opcode: HID_OP.N }, 'o': { opcode: HID_OP.O },
+        'p': { opcode: HID_OP.P }, 'q': { opcode: HID_OP.Q }, 'r': { opcode: HID_OP.R },
+        's': { opcode: HID_OP.S }, 't': { opcode: HID_OP.T }, 'u': { opcode: HID_OP.U },
+        'v': { opcode: HID_OP.V }, 'w': { opcode: HID_OP.W }, 'x': { opcode: HID_OP.X },
+        'y': { opcode: HID_OP.Y }, 'z': { opcode: HID_OP.Z },
+        '!': { opcode: HID_OP.D1, shift: true }, '@': { opcode: HID_OP.D2, shift: true },
+        '#': { opcode: HID_OP.D3, shift: true }, '$': { opcode: HID_OP.D4, shift: true },
+        '%': { opcode: HID_OP.D5, shift: true }, '^': { opcode: HID_OP.D6, shift: true },
+        '&': { opcode: HID_OP.D7, shift: true }, '*': { opcode: HID_OP.D8, shift: true },
+        '(': { opcode: HID_OP.D9, shift: true }, ')': { opcode: HID_OP.D0, shift: true },
+        ' ': { opcode: HID_OP.SPACE },
+        '-': { opcode: HID_OP.MINUS }, '_': { opcode: HID_OP.MINUS, shift: true },
+        '=': { opcode: HID_OP.EQUAL }, '+': { opcode: HID_OP.EQUAL, shift: true },
+        '[': { opcode: HID_OP.BRACKET_LEFT }, '{': { opcode: HID_OP.BRACKET_LEFT, shift: true },
+        ']': { opcode: HID_OP.BRACKET_RIGHT }, '}': { opcode: HID_OP.BRACKET_RIGHT, shift: true },
+        '\\': { opcode: HID_OP.BACKSLASH }, '|': { opcode: HID_OP.BACKSLASH, shift: true },
+        ';': { opcode: HID_OP.SEMICOLON }, ':': { opcode: HID_OP.SEMICOLON, shift: true },
+        "'": { opcode: HID_OP.QUOTE }, '"': { opcode: HID_OP.QUOTE, shift: true },
+        ',': { opcode: HID_OP.COMMA }, '<': { opcode: HID_OP.COMMA, shift: true },
+        '.': { opcode: HID_OP.PERIOD }, '>': { opcode: HID_OP.PERIOD, shift: true },
+        '/': { opcode: HID_OP.SLASH }, '?': { opcode: HID_OP.SLASH, shift: true },
+        '`': { opcode: HID_OP.BACKQUOTE }, '~': { opcode: HID_OP.BACKQUOTE, shift: true },
+        '\n': { opcode: HID_OP.ENTER }, '\t': { opcode: HID_OP.TAB },
+    },
+    // German QWERTZ. Note Y/Z are swapped vs US (same physical-position swap already applied
+    // for live typing), and several symbols live behind AltGr rather than Shift. The two
+    // dead-key positions (acute ´ on Equal, circumflex ^ on Backquote) are intentionally
+    // omitted - sending either alone would only arm the remote's compose state, not produce
+    // a character, so they fall through to "unsupported" like any other unmapped character.
+    de: {
+        '0': { opcode: HID_OP.D0 }, '1': { opcode: HID_OP.D1 }, '2': { opcode: HID_OP.D2 },
+        '3': { opcode: HID_OP.D3 }, '4': { opcode: HID_OP.D4 }, '5': { opcode: HID_OP.D5 },
+        '6': { opcode: HID_OP.D6 }, '7': { opcode: HID_OP.D7 }, '8': { opcode: HID_OP.D8 },
+        '9': { opcode: HID_OP.D9 },
+        'a': { opcode: HID_OP.A }, 'b': { opcode: HID_OP.B }, 'c': { opcode: HID_OP.C },
+        'd': { opcode: HID_OP.D }, 'e': { opcode: HID_OP.E }, 'f': { opcode: HID_OP.F },
+        'g': { opcode: HID_OP.G }, 'h': { opcode: HID_OP.H }, 'i': { opcode: HID_OP.I },
+        'j': { opcode: HID_OP.J }, 'k': { opcode: HID_OP.K }, 'l': { opcode: HID_OP.L },
+        'm': { opcode: HID_OP.M }, 'n': { opcode: HID_OP.N }, 'o': { opcode: HID_OP.O },
+        'p': { opcode: HID_OP.P }, 'q': { opcode: HID_OP.Q }, 'r': { opcode: HID_OP.R },
+        's': { opcode: HID_OP.S }, 't': { opcode: HID_OP.T }, 'u': { opcode: HID_OP.U },
+        'v': { opcode: HID_OP.V }, 'w': { opcode: HID_OP.W }, 'x': { opcode: HID_OP.X },
+        'y': { opcode: HID_OP.Z }, 'z': { opcode: HID_OP.Y }, // swapped vs US
+        '!': { opcode: HID_OP.D1, shift: true }, '"': { opcode: HID_OP.D2, shift: true },
+        '§': { opcode: HID_OP.D3, shift: true }, // section sign (Shift+3 on German)
+        '$': { opcode: HID_OP.D4, shift: true }, '%': { opcode: HID_OP.D5, shift: true },
+        '&': { opcode: HID_OP.D6, shift: true },
+        '/': { opcode: HID_OP.D7, shift: true }, '{': { opcode: HID_OP.D7, altgr: true },
+        '(': { opcode: HID_OP.D8, shift: true }, '[': { opcode: HID_OP.D8, altgr: true },
+        ')': { opcode: HID_OP.D9, shift: true }, ']': { opcode: HID_OP.D9, altgr: true },
+        '=': { opcode: HID_OP.D0, shift: true }, '}': { opcode: HID_OP.D0, altgr: true },
+        ' ': { opcode: HID_OP.SPACE },
+        'ß': { opcode: HID_OP.MINUS },                      // ß
+        '?': { opcode: HID_OP.MINUS, shift: true },
+        '\\': { opcode: HID_OP.MINUS, altgr: true },
+        'ü': { opcode: HID_OP.BRACKET_LEFT },                // ü
+        'Ü': { opcode: HID_OP.BRACKET_LEFT, shift: true },   // Ü
+        '+': { opcode: HID_OP.BRACKET_RIGHT }, '*': { opcode: HID_OP.BRACKET_RIGHT, shift: true },
+        '~': { opcode: HID_OP.BRACKET_RIGHT, altgr: true },
+        '#': { opcode: HID_OP.BACKSLASH }, "'": { opcode: HID_OP.BACKSLASH, shift: true },
+        'ö': { opcode: HID_OP.SEMICOLON },                   // ö
+        'Ö': { opcode: HID_OP.SEMICOLON, shift: true },      // Ö
+        'ä': { opcode: HID_OP.QUOTE },                       // ä
+        'Ä': { opcode: HID_OP.QUOTE, shift: true },          // Ä
+        ',': { opcode: HID_OP.COMMA }, ';': { opcode: HID_OP.COMMA, shift: true },
+        '.': { opcode: HID_OP.PERIOD }, ':': { opcode: HID_OP.PERIOD, shift: true },
+        '-': { opcode: HID_OP.SLASH }, '_': { opcode: HID_OP.SLASH, shift: true },
+        '<': { opcode: HID_OP.INTL_BACKSLASH }, '>': { opcode: HID_OP.INTL_BACKSLASH, shift: true },
+        '|': { opcode: HID_OP.INTL_BACKSLASH, altgr: true },
+        '@': { opcode: HID_OP.Q, altgr: true },
+        '€': { opcode: HID_OP.E, altgr: true },              // €
+        'µ': { opcode: HID_OP.M, altgr: true },              // µ
+        '\n': { opcode: HID_OP.ENTER }, '\t': { opcode: HID_OP.TAB },
+    },
 };
 
 function updatePasteBoxCharCounter() {
@@ -83,17 +163,27 @@ function clearPasteBox() {
     updatePasteBoxCharCounter();
 }
 
-async function sendKeyPress(keycode, needsShift = false) {
+// AI-assisted change: now takes a raw HID opcode plus optional Shift/AltGr, instead of a
+// US-only JS keycode - see PASTE_LAYOUTS above. Shift still goes through the existing
+// SendKeyboardPress(16) mechanism (unchanged, already proven working); AltGr uses the same
+// right-Alt modifier bit already used by live keyboard forwarding.
+async function sendKeyPress(opcode, shift = false, altgr = false) {
     if (typeof controller === 'undefined' || !controller) return;
-    
-    if (needsShift) {
+
+    if (shift) {
         await controller.SendKeyboardPress(16);
     }
-    
-    await controller.SendKeyboardPress(keycode);
-    await controller.SendKeyboardRelease(keycode);
-    
-    if (needsShift) {
+    if (altgr) {
+        await controller.SetModifierKey(18, true); // AltGr = right Alt
+    }
+
+    await controller.SendKeyboardPressOpcode(opcode);
+    await controller.SendKeyboardReleaseOpcode(opcode);
+
+    if (altgr) {
+        await controller.UnsetModifierKey(18, true);
+    }
+    if (shift) {
         await controller.SendKeyboardRelease(16);
     }
 }
@@ -148,20 +238,21 @@ async function sendPasteText() {
         if (pasteCancelled) break;
 
         const char = text[i];
-        
-        if (char >= 'A' && char <= 'Z') {
-            await sendKeyPress(char.charCodeAt(0), true);
-            sentCount++;
-        } else if (char >= 'a' && char <= 'z') {
-            await sendKeyPress(char.toUpperCase().charCodeAt(0), false);
-            sentCount++;
-        } else if (charToKeyCode[char] !== undefined) {
-            const mapping = charToKeyCode[char];
-            if (typeof mapping === 'object') {
-                await sendKeyPress(mapping.keycode, mapping.shift);
-            } else {
-                await sendKeyPress(mapping, false);
-            }
+
+        // AI-assisted change: layout-driven lookup, see PASTE_LAYOUTS above. Uppercase
+        // Latin letters aren't listed individually in the tables (their physical key is the
+        // same as the lowercase letter on every layout) - reuse the lowercase entry's
+        // opcode with Shift forced on. Letters with their own dedicated uppercase entry
+        // (e.g. German Ü/Ö/Ä) are matched directly above this and never reach the fallback.
+        const layout = PASTE_LAYOUTS[pasteKeyboardLayout] || PASTE_LAYOUTS.us;
+        let mapping = layout[char];
+        if (!mapping && char >= 'A' && char <= 'Z') {
+            const lower = layout[char.toLowerCase()];
+            if (lower) mapping = { opcode: lower.opcode, shift: true, altgr: lower.altgr };
+        }
+
+        if (mapping) {
+            await sendKeyPress(mapping.opcode, !!mapping.shift, !!mapping.altgr);
             sentCount++;
         } else {
             skippedCount++;

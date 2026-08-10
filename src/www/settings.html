@@ -409,6 +409,28 @@
                     </div>
                 </div>
 
+                <!-- AI-assisted addition -->
+                <div class="settings-field">
+                    <label>Paste Keyboard Layout</label>
+                    <p class="field-description">Keyboard layout configured on the remote system. Used to translate pasted/typed text (Paste to Remote) into the correct physical keys - must match the remote's actual layout for symbols and accented letters to arrive correctly.</p>
+                    <div class="ui form">
+                        <div class="grouped fields" style="margin: 0;">
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" name="pasteKeyboardLayout" value="us" id="pasteLayoutUs" class="auto-save-setting" onchange="onPasteKeyboardLayoutChange()" checked>
+                                    <label for="pasteLayoutUs">US (QWERTY)</label>
+                                </div>
+                            </div>
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" name="pasteKeyboardLayout" value="de" id="pasteLayoutDe" class="auto-save-setting" onchange="onPasteKeyboardLayoutChange()">
+                                    <label for="pasteLayoutDe">German (QWERTZ)</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                  <div class="settings-field">
                     <label>Ask on Paste</label>
                     <p class="field-description">Prompt for sending Ctrl+V to remote or send local clipboard contents</p>
@@ -569,6 +591,7 @@ const SETTINGS_TEMPLATE = {
     keepAliveMethod: 'mouse',
     ctrlCmdSwap: false,
     askOnPaste: false,
+    pasteKeyboardLayout: 'us',
     relativeMouseSensitivity: 1.0,
     baudrate: 115200,
     saveToLocalStorage: true,
@@ -666,6 +689,15 @@ function onKeepAliveMethodChange() {
     }
 }
 
+// AI-assisted addition
+function onPasteKeyboardLayoutChange() {
+    const radio = document.querySelector('input[name="pasteKeyboardLayout"]:checked');
+    const layout = radio ? radio.value : 'us';
+    if (typeof window.setPasteKeyboardLayout === 'function') {
+        window.setPasteKeyboardLayout(layout);
+    }
+}
+
 // Get current settings from UI
 function getCurrentSettings() {
     const settings = {};
@@ -677,6 +709,7 @@ function getCurrentSettings() {
     settings.mouseJiggler = document.getElementById('chkSettingsMouseJiggler')?.checked ?? SETTINGS_TEMPLATE.mouseJiggler;
     settings.keepAliveMethod = document.querySelector('input[name="keepAliveMethod"]:checked')?.value ?? SETTINGS_TEMPLATE.keepAliveMethod;
     settings.askOnPaste = document.getElementById('chkSettingsAskOnPaste')?.checked ?? SETTINGS_TEMPLATE.askOnPaste;
+    settings.pasteKeyboardLayout = document.querySelector('input[name="pasteKeyboardLayout"]:checked')?.value ?? SETTINGS_TEMPLATE.pasteKeyboardLayout;
     settings.relativeMouseSensitivity = (typeof relativeMouseSensitivity !== 'undefined') ? relativeMouseSensitivity : SETTINGS_TEMPLATE.relativeMouseSensitivity;
     settings.imageSharpening = document.getElementById('chkSettingsImageSharpening')?.checked ?? SETTINGS_TEMPLATE.imageSharpening;
     settings.stackKeysEnabled = document.getElementById('chkSettingsStackKeysEnabled')?.checked ?? SETTINGS_TEMPLATE.stackKeysEnabled;
@@ -829,7 +862,16 @@ function applySettingsToUI(settings) {
             askOnPasteEnabled = settings.askOnPaste;
         }
     }
-    
+
+    // AI-assisted addition: apply paste keyboard layout
+    if (settings.hasOwnProperty('pasteKeyboardLayout')) {
+        const layoutRadio = document.querySelector(`input[name="pasteKeyboardLayout"][value="${settings.pasteKeyboardLayout}"]`);
+        if (layoutRadio) layoutRadio.checked = true;
+        if (typeof window.setPasteKeyboardLayout === 'function') {
+            window.setPasteKeyboardLayout(settings.pasteKeyboardLayout);
+        }
+    }
+
     // Apply baudrate
     if (settings.hasOwnProperty('baudrate')) {
         const baudrateRadio = document.querySelector(`input[name="baudrate"][value="${settings.baudrate}"]`);
