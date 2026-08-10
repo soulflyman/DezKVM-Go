@@ -374,12 +374,31 @@
                 </div>  
 
 
+                <!-- AI-assisted addition: relabeled from "Mouse Jiggler" and given a
+                     selectable method, since jiggling the mouse does nothing on a headless
+                     remote showing only a text console. -->
                 <div class="settings-field">
-                    <label>Mouse Jiggler</label>
-                    <p class="field-description">Enable mouse jiggler after 30 seconds of inactivity.</p>
+                    <label>Keep Remote Awake</label>
+                    <p class="field-description">After 30 seconds of no local input, periodically nudge the remote machine so it doesn't sleep or lock. Choose "Key Press" for headless/text-only sessions (e.g. a bare Linux shell) where mouse movement has no effect.</p>
                     <div class="ui toggle checkbox" id="mouseJigglerCheckbox">
                         <input type="checkbox" id="chkSettingsMouseJiggler" class="auto-save-setting" onchange="toggleMouseJiggler()">
-                        <label>Enable Mouse jiggler</label>
+                        <label>Enable keep-awake</label>
+                    </div>
+                    <div class="ui form" style="margin-top: 10px;">
+                        <div class="grouped fields" style="margin: 0;">
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" name="keepAliveMethod" value="mouse" id="keepAliveMouse" class="auto-save-setting" onchange="onKeepAliveMethodChange()" checked>
+                                    <label for="keepAliveMouse">Mouse jiggle (nudge cursor left/right)</label>
+                                </div>
+                            </div>
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" name="keepAliveMethod" value="key" id="keepAliveKey" class="auto-save-setting" onchange="onKeepAliveMethodChange()">
+                                    <label for="keepAliveKey">Key press (tap Ctrl — harmless in shells/terminals)</label>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -531,6 +550,7 @@ const SETTINGS_TEMPLATE = {
     invertScrollwheel: false,
     relativeMouseMode: false,
     mouseJiggler: false,
+    keepAliveMethod: 'mouse',
     ctrlCmdSwap: false,
     askOnPaste: false,
     relativeMouseSensitivity: 1.0,
@@ -621,6 +641,15 @@ function onStackKeyToggleChange() {
     }
 }
 
+// AI-assisted addition: Keep Remote Awake method radio change handler
+function onKeepAliveMethodChange() {
+    const radio = document.querySelector('input[name="keepAliveMethod"]:checked');
+    const method = radio ? radio.value : 'mouse';
+    if (typeof window.setKeepAliveMethod === 'function') {
+        window.setKeepAliveMethod(method);
+    }
+}
+
 // Get current settings from UI
 function getCurrentSettings() {
     const settings = {};
@@ -630,6 +659,7 @@ function getCurrentSettings() {
     settings.invertScrollwheel = document.getElementById('chkSettingsInvertScrollwheel')?.checked ?? SETTINGS_TEMPLATE.invertScrollwheel;
     settings.relativeMouseMode = document.getElementById('chkSettingsRelativeMouseMode')?.checked ?? SETTINGS_TEMPLATE.relativeMouseMode;
     settings.mouseJiggler = document.getElementById('chkSettingsMouseJiggler')?.checked ?? SETTINGS_TEMPLATE.mouseJiggler;
+    settings.keepAliveMethod = document.querySelector('input[name="keepAliveMethod"]:checked')?.value ?? SETTINGS_TEMPLATE.keepAliveMethod;
     settings.askOnPaste = document.getElementById('chkSettingsAskOnPaste')?.checked ?? SETTINGS_TEMPLATE.askOnPaste;
     settings.relativeMouseSensitivity = (typeof relativeMouseSensitivity !== 'undefined') ? relativeMouseSensitivity : SETTINGS_TEMPLATE.relativeMouseSensitivity;
     settings.imageSharpening = document.getElementById('chkSettingsImageSharpening')?.checked ?? SETTINGS_TEMPLATE.imageSharpening;
@@ -764,7 +794,16 @@ function applySettingsToUI(settings) {
             window.setMouseJigglerEnabled(settings.mouseJiggler);
         }
     }
-    
+
+    // AI-assisted addition: apply keep-awake method
+    if (settings.hasOwnProperty('keepAliveMethod')) {
+        const methodRadio = document.querySelector(`input[name="keepAliveMethod"][value="${settings.keepAliveMethod}"]`);
+        if (methodRadio) methodRadio.checked = true;
+        if (typeof window.setKeepAliveMethod === 'function') {
+            window.setKeepAliveMethod(settings.keepAliveMethod);
+        }
+    }
+
     // Apply ask on paste
     const pasteChk = document.getElementById('chkSettingsAskOnPaste');
     if (pasteChk && settings.hasOwnProperty('askOnPaste')) {

@@ -1213,18 +1213,25 @@ function cancelPasteText() {
 }
 
 /*
-    Mouse Jiggler
-    When enabled, after 30 seconds of no user activity the mouse will
-    jiggle left/right every 5 seconds to prevent the remote machine from
-    going to sleep.  Any user interaction stops the jiggle immediately
-    and restarts the inactivity timer.
+    Keep Remote Awake (formerly "Mouse Jiggler")
+    When enabled, after 30 seconds of no user activity the remote machine is nudged every
+    5 seconds to prevent it from sleeping/locking. Any user interaction stops the nudging
+    immediately and restarts the inactivity timer.
+
+    AI-assisted addition: two methods are available (see `keepAliveMethod`) -
+      - 'mouse' (default, original behavior): jiggle the mouse cursor left/right.
+      - 'key': tap Ctrl alone (press + release, no other key). A bare Ctrl tap is a no-op
+        in virtually any context - shells, text consoles, GUIs - so it's safe to use when
+        connected to a headless/text-only remote where mouse movement has no effect.
 */
 (function () {
-    const IDLE_TIMEOUT_MS = 30000;   // 30 seconds of inactivity before jiggling
-    const JIGGLE_INTERVAL_MS = 5000; // jiggle every 5 seconds
-    const JIGGLE_AMOUNT = 10;         // pixels to move left / right
+    const IDLE_TIMEOUT_MS = 30000;   // 30 seconds of inactivity before nudging
+    const JIGGLE_INTERVAL_MS = 5000; // nudge every 5 seconds
+    const JIGGLE_AMOUNT = 10;         // pixels to move left / right (mouse method)
+    const KEEP_ALIVE_KEYCODE = 17;    // Ctrl (key method)
 
     let jiggleEnabled = false;
+    let keepAliveMethod = 'mouse';    // 'mouse' | 'key'
     let idleTimer = null;
     let jiggleTimer = null;
     let jiggleDirection = 1;          // 1 = right, -1 = left
@@ -1252,29 +1259,56 @@ function cancelPasteText() {
         if (!jiggleEnabled) return;
 
         idleTimer = setTimeout(() => {
-            // Start jiggling
+            // Start nudging
             jiggleDirection = 1;
-            doJiggle(); // immediate first jiggle
+            doJiggle(); // immediate first nudge
             jiggleTimer = setInterval(doJiggle, JIGGLE_INTERVAL_MS);
         }, IDLE_TIMEOUT_MS);
+    }
+
+    async function doMouseJiggle() {
+        // Move in the current direction
+        let dx = JIGGLE_AMOUNT * jiggleDirection;
+        if (dx < 0) dx = 256 + dx; // convert to unsigned byte
+        await controller.MouseMoveRelative(dx, 0, 0);
+
+        // Flip direction for next time so the cursor returns
+        jiggleDirection *= -1;
+    }
+
+    async function doKeyTap() {
+        // Tap Ctrl alone - deliberately not run through swapCtrlCmd(), since this is a
+        // synthetic keep-alive action, not a real user keystroke, and shouldn't be affected
+        // by the user's Ctrl<->Cmd swap preference.
+        //
+        // The release is in `finally` so it always runs even if the press's write fails
+        // partway through: HIDController.SetModifierKey()/UnsetModifierKey() both mutate
+        // `hidState.Modkey` synchronously *before* awaiting the serial write, so calling
+        // UnsetModifierKey() here still clears the local "Ctrl held" state even on a dead
+        // link - without this, a failed write would leave Ctrl logically stuck down and
+        // silently corrupt every keystroke the user sends afterward.
+        try {
+            await controller.SetModifierKey(KEEP_ALIVE_KEYCODE, false);
+            await new Promise(resolve => setTimeout(resolve, 50));
+        } finally {
+            await controller.UnsetModifierKey(KEEP_ALIVE_KEYCODE, false);
+        }
     }
 
     async function doJiggle() {
         if (!serialPort || !serialPort.readable || !serialPort.writable) return;
         try {
-            // Move in the current direction
-            let dx = JIGGLE_AMOUNT * jiggleDirection;
-            if (dx < 0) dx = 256 + dx; // convert to unsigned byte
-            await controller.MouseMoveRelative(dx, 0, 0);
-
-            // Flip direction for next time so the cursor returns
-            jiggleDirection *= -1;
+            if (keepAliveMethod === 'key') {
+                await doKeyTap();
+            } else {
+                await doMouseJiggle();
+            }
         } catch (e) {
             // Ignore – serial port may have been closed
         }
     }
 
-    // ---- toggle (called from settings.html) ----
+    // ---- toggle / method select (called from settings.html) ----
     window.setMouseJigglerEnabled = function(enabled) {
         jiggleEnabled = enabled;
         if (jiggleEnabled) {
@@ -1283,6 +1317,10 @@ function cancelPasteText() {
             stopJiggle();
             if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
         }
+    };
+
+    window.setKeepAliveMethod = function(method) {
+        keepAliveMethod = (method === 'key') ? 'key' : 'mouse';
     };
 
     // ---- user-activity listeners (reset idle timer) ----
@@ -2095,7 +2133,7 @@ function toggleAskOnPaste() {
     });
 }
 
-// Toggle mouse jiggler
+// Toggle "Keep Remote Awake" (formerly "mouse jiggler" - now also supports a key-tap method)
 function toggleMouseJiggler() {
     const chk = document.getElementById('chkSettingsMouseJiggler');
     const enabled = chk ? chk.checked : false;
@@ -2104,8 +2142,8 @@ function toggleMouseJiggler() {
     }
     $('body').toast({
         message: enabled
-            ? '<i class="mouse pointer icon"></i> Mouse jiggler enabled (activates after 30 s idle)'
-            : '<i class="mouse pointer icon"></i> Mouse jiggler disabled'
+            ? '<i class="mouse pointer icon"></i> Keep-awake enabled (activates after 30 s idle)'
+            : '<i class="mouse pointer icon"></i> Keep-awake disabled'
     });
 }
 
