@@ -91,21 +91,31 @@ async function requestSerialPort() {
             // pairing that "succeeded" (port opened fine) but never got a reply from the
             // HID chip - the exact "paired but nothing forwards, no errors" symptom - was
             // completely silent. Surface both the timeout and hard-failure cases.
+            //
+            // AI-assisted fix: a single retry (700ms-1000ms total budget) still wasn't
+            // enough for some setups - confirmed by real-world testing where the warning
+            // kept firing even though input worked perfectly once dismissed, meaning the
+            // link itself was fine and only the detection window was too tight. Widened to
+            // up to 3 total attempts with increasing gaps (worst case ~1.9s) before treating
+            // it as a genuine handshake failure. Each attempt re-sends a fresh softReset()
+            // command rather than just waiting longer for one reply, so this is robust
+            // whether the cause is the chip needing more time to wake up, or the first
+            // packet after port.open() getting dropped (a known quirk on some USB-serial
+            // bridges) - either way, a later attempt gets a clean shot at a reply.
+            const HANDSHAKE_MAX_ATTEMPTS = 3;
+            const HANDSHAKE_RETRY_DELAYS_MS = [300, 600]; // gap before attempt 2, before attempt 3
             try {
-                let result = await controller.softReset();
-                if (!result || result.success === false) {
-                    // AI-assisted fix for #11: the CH9329 occasionally isn't ready to reply
-                    // to the very first command sent right after the port opens (OS serial
-                    // driver settling time), even though the link is otherwise fine -
-                    // confirmed by real-world testing where input worked flawlessly despite
-                    // this warning firing on the first attempt. Retry once before treating
-                    // it as a genuine handshake failure.
-                    console.warn('Soft reset got no reply on first attempt, retrying once...');
-                    await new Promise(resolve => setTimeout(resolve, 300));
+                let result = null;
+                for (let attempt = 0; attempt < HANDSHAKE_MAX_ATTEMPTS; attempt++) {
+                    if (attempt > 0) {
+                        console.warn(`Soft reset got no reply, retrying (attempt ${attempt + 1}/${HANDSHAKE_MAX_ATTEMPTS})...`);
+                        await new Promise(resolve => setTimeout(resolve, HANDSHAKE_RETRY_DELAYS_MS[attempt - 1]));
+                    }
                     result = await controller.softReset();
+                    if (result && result.success !== false) break;
                 }
                 if (!result || result.success === false) {
-                    console.warn('Soft reset got no reply from the HID device after retry (timeout).');
+                    console.warn('Soft reset got no reply from the HID device after retries (timeout).');
                     $('body').toast({
                         message: '<i class="yellow warning sign icon"></i> Paired, but the device did not respond to the initial handshake. Keyboard/mouse input may not work — check the baudrate and cable, then try reconnecting.',
                         class: 'warning'
