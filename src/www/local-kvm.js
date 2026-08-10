@@ -1218,20 +1218,30 @@ function cancelPasteText() {
     5 seconds to prevent it from sleeping/locking. Any user interaction stops the nudging
     immediately and restarts the inactivity timer.
 
-    AI-assisted addition: two methods are available (see `keepAliveMethod`) -
+    AI-assisted addition: three methods are available (see `keepAliveMethod`) -
       - 'mouse' (default, original behavior): jiggle the mouse cursor left/right.
       - 'key': tap Ctrl alone (press + release, no other key). A bare Ctrl tap is a no-op
         in virtually any context - shells, text consoles, GUIs - so it's safe to use when
         connected to a headless/text-only remote where mouse movement has no effect.
+        Caveat: a lone modifier key never generates a character on the tty, so while it
+        resets screen-blanking/screensaver idle timers, it does NOT reset a shell-level
+        timeout (e.g. bash's $TMOUT) or an SSH inactivity disconnect.
+      - 'arrow': tap Right Arrow then Left Arrow (real keypresses, not just a modifier).
+        This does generate tty input, so unlike 'key' it also resets shell/SSH-level idle
+        timeouts - moving the cursor right then immediately back left is a no-op in a shell
+        prompt (typed or empty), vim, less, etc. Slightly less universally inert than 'key'
+        since a handful of TUI apps rebind arrow keys to something stateful, but still safe
+        for the terminal/shell use case this feature targets.
 */
 (function () {
     const IDLE_TIMEOUT_MS = 30000;   // 30 seconds of inactivity before nudging
     const JIGGLE_INTERVAL_MS = 5000; // nudge every 5 seconds
     const JIGGLE_AMOUNT = 10;         // pixels to move left / right (mouse method)
     const KEEP_ALIVE_KEYCODE = 17;    // Ctrl (key method)
+    const KEEP_ALIVE_ARROW_KEYCODES = [39, 37]; // Right, then Left (arrow method)
 
     let jiggleEnabled = false;
-    let keepAliveMethod = 'mouse';    // 'mouse' | 'key'
+    let keepAliveMethod = 'mouse';    // 'mouse' | 'key' | 'arrow'
     let idleTimer = null;
     let jiggleTimer = null;
     let jiggleDirection = 1;          // 1 = right, -1 = left
@@ -1295,11 +1305,34 @@ function cancelPasteText() {
         }
     }
 
+    async function tapKey(keycode) {
+        // Press+release a single key, guaranteeing the release always runs (see doKeyTap()
+        // above for why: SendKeyboardPress()/SendKeyboardRelease() both mutate
+        // hidState.KeyboardButtons synchronously before awaiting the serial write, so this
+        // keeps local state consistent even if a write fails partway through).
+        try {
+            await controller.SendKeyboardPress(keycode);
+            await new Promise(resolve => setTimeout(resolve, 40));
+        } finally {
+            await controller.SendKeyboardRelease(keycode);
+        }
+    }
+
+    async function doArrowTap() {
+        // Right, then Left - a round trip that's a no-op wherever the cursor happens to be.
+        for (const keycode of KEEP_ALIVE_ARROW_KEYCODES) {
+            await tapKey(keycode);
+            await new Promise(resolve => setTimeout(resolve, 40));
+        }
+    }
+
     async function doJiggle() {
         if (!serialPort || !serialPort.readable || !serialPort.writable) return;
         try {
             if (keepAliveMethod === 'key') {
                 await doKeyTap();
+            } else if (keepAliveMethod === 'arrow') {
+                await doArrowTap();
             } else {
                 await doMouseJiggle();
             }
@@ -1320,7 +1353,7 @@ function cancelPasteText() {
     };
 
     window.setKeepAliveMethod = function(method) {
-        keepAliveMethod = (method === 'key') ? 'key' : 'mouse';
+        keepAliveMethod = (method === 'key' || method === 'arrow') ? method : 'mouse';
     };
 
     // ---- user-activity listeners (reset idle timer) ----

@@ -379,7 +379,7 @@
                      remote showing only a text console. -->
                 <div class="settings-field">
                     <label>Keep Remote Awake</label>
-                    <p class="field-description">After 30 seconds of no local input, periodically nudge the remote machine so it doesn't sleep or lock. Choose "Key Press" for headless/text-only sessions (e.g. a bare Linux shell) where mouse movement has no effect.</p>
+                    <p class="field-description">After 30 seconds of no local input, periodically nudge the remote machine so it doesn't sleep or lock. For headless/text-only sessions (e.g. a bare Linux shell), use one of the key-press methods instead of mouse jiggle, since mouse movement has no effect there. "Ctrl tap" resets screen-blanking/screensaver timers but not shell/SSH-level idle timeouts (a lone modifier never reaches the tty); "Arrow tap" resets both, at the small cost of being a real keypress.</p>
                     <div class="ui toggle checkbox" id="mouseJigglerCheckbox">
                         <input type="checkbox" id="chkSettingsMouseJiggler" class="auto-save-setting" onchange="toggleMouseJiggler()">
                         <label>Enable keep-awake</label>
@@ -395,7 +395,14 @@
                             <div class="field">
                                 <div class="ui radio checkbox">
                                     <input type="radio" name="keepAliveMethod" value="key" id="keepAliveKey" class="auto-save-setting" onchange="onKeepAliveMethodChange()">
-                                    <label for="keepAliveKey">Key press (tap Ctrl — harmless in shells/terminals)</label>
+                                    <label for="keepAliveKey">Key press: Ctrl tap (harmless, but doesn't reset shell/SSH timeouts)</label>
+                                </div>
+                            </div>
+                            <!-- AI-assisted addition -->
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" name="keepAliveMethod" value="arrow" id="keepAliveArrow" class="auto-save-setting" onchange="onKeepAliveMethodChange()">
+                                    <label for="keepAliveArrow">Key press: Arrow tap (Right, then Left — also resets shell/SSH timeouts)</label>
                                 </div>
                             </div>
                         </div>
