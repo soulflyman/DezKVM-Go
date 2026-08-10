@@ -115,11 +115,12 @@ async function requestSerialPort() {
                     if (result && result.success !== false) break;
                 }
                 if (!result || result.success === false) {
-                    console.warn('Soft reset got no reply from the HID device after retries (timeout).');
-                    $('body').toast({
-                        message: '<i class="yellow warning sign icon"></i> Paired, but the device did not respond to the initial handshake. Keyboard/mouse input may not work — check the baudrate and cable, then try reconnecting.',
-                        class: 'warning'
-                    });
+                    // AI-assisted fix: the handshake-timeout warning toast was disabled -
+                    // even after widening the retry budget it kept firing as a false
+                    // positive on some setups where input worked perfectly regardless, so
+                    // it was more irritating than useful. Left as a console warning only
+                    // (still visible in devtools) in case the timing needs revisiting later.
+                    console.warn('Soft reset got no reply from the HID device after retries (timeout) - input has been reported to work fine regardless, so no warning is shown to the user.');
                 }
             } catch (resetErr) {
                 console.error('Soft reset failed:', resetErr);
