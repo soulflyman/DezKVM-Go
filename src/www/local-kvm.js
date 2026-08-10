@@ -1777,8 +1777,110 @@ document.getElementById('fullscreenBtn').addEventListener('click', () => {
             document.body.msRequestFullscreen();
         }
         document.querySelector('#fullscreenBtn i').className = 'compress icon';
-        
+
     }
+});
+
+/*
+    AI-assisted addition: Keyboard Capture mode, like a VM console (VMware/VirtualBox) or
+    VNC/RDP web client (noVNC, Guacamole) - uses the Keyboard Lock API so OS-reserved keys
+    (Windows key, Alt+Tab, etc.) reach this page instead of the local OS/window manager
+    while capturing, so they get forwarded to the remote like any other key.
+
+    Notes/limits:
+    - Chromium-only (Chrome/Edge/Opera) - same boundary as navigator.serial, which this app
+      already requires. Firefox/Safari don't implement navigator.keyboard.lock at all.
+    - Requires the page to actually be in fullscreen; the lock is (re)applied from the
+      fullscreenchange listener below once fullscreen is confirmed active, and dropped the
+      moment fullscreen ends, however that happens (this button, F11, or Chromium's built-in
+      hold-Esc-to-exit safety gesture).
+    - Ctrl+Alt+Del can NEVER be intercepted by any browser API on any OS - it's a
+      hardware-level Secure Attention Sequence. That's not a gap here: quick-access.js
+      already has a dedicated "ctrl-alt-del" button that sends the HID sequence straight to
+      the remote, which is the correct way every KVM/VNC tool handles this.
+*/
+let keyCaptureEnabled = false;
+
+// Returns a Promise so callers can await fullscreen actually being engaged before calling
+// navigator.keyboard.lock() - Chromium's user-activation grant for lock() only reliably
+// carries through when it's awaited in the same async chain as the click that started it,
+// not from a separate later 'fullscreenchange' event handler.
+function requestFullscreenCompat() {
+    if (document.body.requestFullscreen) return document.body.requestFullscreen();
+    else if (document.body.webkitRequestFullscreen) return document.body.webkitRequestFullscreen();
+    else if (document.body.mozRequestFullScreen) return document.body.mozRequestFullScreen();
+    else if (document.body.msRequestFullscreen) return document.body.msRequestFullscreen();
+    return Promise.resolve();
+}
+
+function isDocumentFullscreen() {
+    return !!(document.fullscreenElement || document.webkitFullscreenElement ||
+              document.mozFullScreenElement || document.msFullscreenElement);
+}
+
+// Icon-swap (matching #fullscreenBtn/#selectSerialPort's existing convention) rather than a
+// color class - #keyCaptureBtn is a plain "basic icon button" with no color class, so
+// Fomantic's .negative styling wouldn't reliably show, and a capture toggle with no visible
+// state is worse than no toggle at all.
+function updateKeyCaptureButton() {
+    const icon = document.querySelector('#keyCaptureBtn i');
+    const btn = document.getElementById('keyCaptureBtn');
+    if (icon) icon.className = keyCaptureEnabled ? 'unlock alternate icon' : 'lock icon';
+    if (btn) btn.title = keyCaptureEnabled
+        ? 'Keyboard capture active (Windows key, Alt+Tab reach the remote) - click to release, or hold Esc to exit fullscreen'
+        : 'Capture Keyboard (Windows key, Alt+Tab, etc.) - requires fullscreen';
+}
+
+async function setKeyCaptureEnabled(enabled) {
+    if (enabled) {
+        if (!navigator.keyboard || typeof navigator.keyboard.lock !== 'function') {
+            $('body').toast({
+                message: '<i class="yellow warning sign icon"></i> Full keyboard capture (Windows key, Alt+Tab, etc.) requires a Chromium-based browser (Chrome/Edge). Use the Quick Access panel\'s shortcut buttons instead.',
+                class: 'warning'
+            });
+            return;
+        }
+        try {
+            if (!isDocumentFullscreen()) {
+                await requestFullscreenCompat();
+            }
+            await navigator.keyboard.lock();
+            keyCaptureEnabled = true;
+        } catch (e) {
+            console.error('Keyboard lock failed:', e);
+            $('body').toast({ message: `<i class="red exclamation triangle icon"></i> Failed to capture keyboard: ${e.message}`, class: 'error' });
+            keyCaptureEnabled = false;
+        }
+        updateKeyCaptureButton();
+    } else {
+        keyCaptureEnabled = false;
+        updateKeyCaptureButton();
+        if (navigator.keyboard && typeof navigator.keyboard.unlock === 'function') {
+            navigator.keyboard.unlock();
+        }
+    }
+}
+
+function toggleKeyCapture() {
+    setKeyCaptureEnabled(!keyCaptureEnabled);
+}
+
+// Global fullscreen-exit cleanup only (covers every exit trigger - this button, F11, or
+// Chromium's hold-Esc-to-exit gesture): capture can't stay active once fullscreen ends, so
+// unlock and reset state regardless of how fullscreen was left. The *entering* direction is
+// handled directly in setKeyCaptureEnabled() above, in the same user-gesture chain as the
+// click that requested it - see the comment on requestFullscreenCompat() for why.
+function handleFullscreenChangeForKeyCapture() {
+    if (!isDocumentFullscreen() && keyCaptureEnabled) {
+        if (navigator.keyboard && typeof navigator.keyboard.unlock === 'function') {
+            navigator.keyboard.unlock();
+        }
+        keyCaptureEnabled = false;
+        updateKeyCaptureButton();
+    }
+}
+['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange', 'MSFullscreenChange'].forEach(evt => {
+    document.addEventListener(evt, handleFullscreenChangeForKeyCapture);
 });
 
 // KVM Connect Prompt logic
