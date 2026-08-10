@@ -170,21 +170,33 @@ function clearPasteBox() {
 async function sendKeyPress(opcode, shift = false, altgr = false) {
     if (typeof controller === 'undefined' || !controller) return;
 
-    if (shift) {
-        await controller.SendKeyboardPress(16);
-    }
-    if (altgr) {
-        await controller.SetModifierKey(18, true); // AltGr = right Alt
-    }
+    try {
+        if (shift) {
+            await controller.SendKeyboardPress(16);
+        }
+        if (altgr) {
+            await controller.SetModifierKey(18, true); // AltGr = right Alt
+        }
 
-    await controller.SendKeyboardPressOpcode(opcode);
-    await controller.SendKeyboardReleaseOpcode(opcode);
-
-    if (altgr) {
-        await controller.UnsetModifierKey(18, true);
-    }
-    if (shift) {
-        await controller.SendKeyboardRelease(16);
+        await controller.SendKeyboardPressOpcode(opcode);
+        await controller.SendKeyboardReleaseOpcode(opcode);
+    } finally {
+        // AI-assisted fix: release whatever modifiers this call may have pressed, even if an
+        // earlier step threw. HIDController's press/release methods mutate local HID state
+        // synchronously before awaiting the write, so a failed send can still leave
+        // Shift/AltGr "held" in local state unless explicitly released - otherwise a
+        // mid-paste failure (the exact case sendPasteText's try/catch exists for) would
+        // leave every subsequent keystroke, including live typing, arriving with a stuck
+        // modifier. Release calls are safe to call even if the matching press never actually
+        // landed (no-op if not held); swallow their own failures so they can't mask the real
+        // error from the outer catch. Same pattern already used by the keep-awake
+        // doKeyTap() in local-kvm.js.
+        if (altgr) {
+            await controller.UnsetModifierKey(18, true).catch(() => {});
+        }
+        if (shift) {
+            await controller.SendKeyboardRelease(16).catch(() => {});
+        }
     }
 }
 
@@ -210,9 +222,16 @@ async function sendPasteText() {
         return;
     }
 
-    if (typeof controller === 'undefined' || !controller) {
+    // AI-assisted fix: `controller` is a singleton instantiated unconditionally at page
+    // load (local-kvm.js), so it's always truthy regardless of whether the serial port is
+    // actually open - checking it here never caught "not connected". Check the real serial
+    // state instead, matching the guard style already used elsewhere (e.g. MouseMoveAbsolute
+    // in local-kvm.js). Without this, sending started anyway and the first character threw
+    // deep inside the send path, leaving the modal stuck - see the try/finally below.
+    if (typeof serialPort === 'undefined' || !serialPort || !serialPort.writable ||
+        typeof serialWriter === 'undefined' || !serialWriter) {
         $('body').toast({
-            message: '<i class="red times circle icon"></i> HID not connected',
+            message: '<i class="red times circle icon"></i> Serial port not connected',
         });
         return;
     }
@@ -233,35 +252,61 @@ async function sendPasteText() {
 
     let sentCount = 0;
     let skippedCount = 0;
+    let sendError = null;
 
-    for (let i = 0; i < text.length; i++) {
-        if (pasteCancelled) break;
+    // AI-assisted fix: the button/textarea/progress-bar reset used to live only after this
+    // loop, so if a character send threw (e.g. the device disconnects mid-paste, or a real
+    // serial error) the function exited via an unhandled rejection and the modal was stuck
+    // showing "Sending..." forever - Cancel couldn't even help, since the loop that checks
+    // pasteCancelled had already exited. The finally block guarantees the UI always resets,
+    // regardless of how the loop ends (completion, cancellation, or an exception).
+    try {
+        for (let i = 0; i < text.length; i++) {
+            if (pasteCancelled) break;
 
-        const char = text[i];
+            const char = text[i];
 
-        // AI-assisted change: layout-driven lookup, see PASTE_LAYOUTS above. Uppercase
-        // Latin letters aren't listed individually in the tables (their physical key is the
-        // same as the lowercase letter on every layout) - reuse the lowercase entry's
-        // opcode with Shift forced on. Letters with their own dedicated uppercase entry
-        // (e.g. German Ü/Ö/Ä) are matched directly above this and never reach the fallback.
-        const layout = PASTE_LAYOUTS[pasteKeyboardLayout] || PASTE_LAYOUTS.us;
-        let mapping = layout[char];
-        if (!mapping && char >= 'A' && char <= 'Z') {
-            const lower = layout[char.toLowerCase()];
-            if (lower) mapping = { opcode: lower.opcode, shift: true, altgr: lower.altgr };
+            // AI-assisted change: layout-driven lookup, see PASTE_LAYOUTS above. Uppercase
+            // Latin letters aren't listed individually in the tables (their physical key is
+            // the same as the lowercase letter on every layout) - reuse the lowercase
+            // entry's opcode with Shift forced on. Letters with their own dedicated
+            // uppercase entry (e.g. German Ü/Ö/Ä) are matched directly above this and never
+            // reach the fallback.
+            const layout = PASTE_LAYOUTS[pasteKeyboardLayout] || PASTE_LAYOUTS.us;
+            let mapping = layout[char];
+            if (!mapping && char >= 'A' && char <= 'Z') {
+                const lower = layout[char.toLowerCase()];
+                if (lower) mapping = { opcode: lower.opcode, shift: true, altgr: lower.altgr };
+            }
+
+            if (mapping) {
+                await sendKeyPress(mapping.opcode, !!mapping.shift, !!mapping.altgr);
+                sentCount++;
+            } else {
+                skippedCount++;
+            }
+
+            const progress = ((i + 1) / text.length) * 100;
+            $('#pasteProgressBar').progress('set percent', progress);
+
+            await new Promise(resolve => setTimeout(resolve, 30));
         }
+    } catch (err) {
+        console.error('Paste to Remote: sending failed', err);
+        sendError = err;
+    } finally {
+        sendButton.style.display = 'inline-block';
+        clearButton.style.display = 'inline-block';
+        cancelButton.style.display = 'none';
+        textarea.disabled = false;
+        progressBar.style.display = 'none';
+    }
 
-        if (mapping) {
-            await sendKeyPress(mapping.opcode, !!mapping.shift, !!mapping.altgr);
-            sentCount++;
-        } else {
-            skippedCount++;
-        }
-
-        const progress = ((i + 1) / text.length) * 100;
-        $('#pasteProgressBar').progress('set percent', progress);
-
-        await new Promise(resolve => setTimeout(resolve, 30));
+    if (sendError) {
+        $('body').toast({
+            message: `<i class="red exclamation icon"></i> Sending failed: ${sendError.message}`,
+        });
+        return; // leave the typed text in the box so the user can retry after reconnecting
     }
 
     if (!pasteCancelled) {
@@ -270,15 +315,6 @@ async function sendPasteText() {
             message += `, skipped ${skippedCount} unsupported characters`;
         }
         $('body').toast({ message: message });
-    }
-
-    sendButton.style.display = 'inline-block';
-    clearButton.style.display = 'inline-block';
-    cancelButton.style.display = 'none';
-    textarea.disabled = false;
-    progressBar.style.display = 'none';
-
-    if (!pasteCancelled) {
         clearPasteBox();
         closePasteBox();
     }
