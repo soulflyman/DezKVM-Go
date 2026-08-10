@@ -92,9 +92,20 @@ async function requestSerialPort() {
             // HID chip - the exact "paired but nothing forwards, no errors" symptom - was
             // completely silent. Surface both the timeout and hard-failure cases.
             try {
-                const result = await controller.softReset();
+                let result = await controller.softReset();
                 if (!result || result.success === false) {
-                    console.warn('Soft reset got no reply from the HID device (timeout).');
+                    // AI-assisted fix for #11: the CH9329 occasionally isn't ready to reply
+                    // to the very first command sent right after the port opens (OS serial
+                    // driver settling time), even though the link is otherwise fine -
+                    // confirmed by real-world testing where input worked flawlessly despite
+                    // this warning firing on the first attempt. Retry once before treating
+                    // it as a genuine handshake failure.
+                    console.warn('Soft reset got no reply on first attempt, retrying once...');
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                    result = await controller.softReset();
+                }
+                if (!result || result.success === false) {
+                    console.warn('Soft reset got no reply from the HID device after retry (timeout).');
                     $('body').toast({
                         message: '<i class="yellow warning sign icon"></i> Paired, but the device did not respond to the initial handshake. Keyboard/mouse input may not work — check the baudrate and cable, then try reconnecting.',
                         class: 'warning'
