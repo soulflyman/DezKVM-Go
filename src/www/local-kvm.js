@@ -1508,6 +1508,22 @@ async function startStream() {
         if (manualSelection && manualSelection.videoDevice) {
             videoCandidates = videoCandidates.filter(c => c.device.deviceId !== manualSelection.videoDevice.deviceId);
             videoCandidates.unshift({ device: manualSelection.videoDevice, pair: null, tier: 'manual' });
+        } else {
+            // AI-assisted fix: if more than one device exactly matches a known VID:PID,
+            // ask the user instead of silently auto-trying them in order (previously this
+            // just iterated candidates and used whichever succeeded first, which is
+            // non-deterministic across runs and contradicts the intended "ambiguous match
+            // means ask" rule). Only applies when there's no manual override already
+            // resolving the ambiguity for a returning user.
+            const exactMatchCount = videoCandidates.filter(c => c.tier === 'exact').length;
+            if (exactMatchCount > 1) {
+                console.warn(`${exactMatchCount} devices exactly match a known DezKVM-Go VID:PID; asking the user to choose.`);
+                $('body').toast({
+                    message: '<i class="yellow warning sign icon"></i> Multiple matching capture devices found — please choose one.'
+                });
+                if (typeof openDeviceSelectDialog === 'function') openDeviceSelectDialog();
+                return;
+            }
         }
 
         if (videoCandidates.length === 0) {
@@ -1540,7 +1556,9 @@ async function startStream() {
         // move on to the next candidate (e.g. a second physical DezKVM-Go unit).
         let videoStream = null;
         let chosenCandidate = null;
+        let lastVideoError = null;
         for (const candidate of videoCandidates) {
+            let candidateBusy = false;
             for (const mode of MODE_LIST) {
                 try {
                     videoStream = await window.navigator.mediaDevices.getUserMedia({
@@ -1555,20 +1573,49 @@ async function startStream() {
                     chosenCandidate = candidate;
                     break;
                 } catch (e) {
+                    lastVideoError = e;
                     console.log(`Failed to start video stream with mode ${mode.width}x${mode.height}@${mode.frameRate}fps:`, e);
                     if (isDeviceBusyOrBlockedError(e)) {
                         console.warn(`Device "${candidate.device.label || candidate.device.deviceId}" appears to be in use elsewhere; trying next candidate if available.`);
+                        candidateBusy = true;
                         break; // abandon this candidate, try the next one
                     }
                     // Otherwise keep trying the next mode for the same candidate
                 }
             }
+
+            // AI-assisted fix: if every exact-resolution attempt above failed for a reason
+            // OTHER than the device being busy (e.g. OverconstrainedError - the real camera's
+            // supported modes don't precisely match MODE_LIST's exact 30/25fps values), try
+            // once more with no resolution/framerate constraints at all before giving up on
+            // this candidate. Without this, a correctly VID:PID-identified device could still
+            // fail to connect intermittently depending on exactly what modes it reports.
+            if (!videoStream && !candidateBusy) {
+                try {
+                    videoStream = await window.navigator.mediaDevices.getUserMedia({
+                        video: { deviceId: { exact: candidate.device.deviceId } },
+                    });
+                    console.log(`Video stream started with unconstrained resolution fallback (device: ${candidate.device.label || candidate.device.deviceId})`);
+                    chosenCandidate = candidate;
+                } catch (e) {
+                    lastVideoError = e;
+                    console.log(`Unconstrained fallback also failed for device "${candidate.device.label || candidate.device.deviceId}":`, e);
+                }
+            }
+
             if (videoStream) break;
         }
 
         if (!videoStream || !chosenCandidate) {
-            console.error('Failed to start video stream with all candidates/modes');
-            alert('Failed to start video stream. Please check the device connection.');
+            // AI-assisted fix: this used to be a dead-end alert() with no recourse - a
+            // device correctly identified by VID:PID that still failed to connect (e.g. a
+            // transient negotiation failure) left the user stuck without a reload. Now
+            // falls back to the same manual device-select dialog used elsewhere.
+            console.error('Failed to start video stream with all candidates/modes', lastVideoError);
+            $('body').toast({
+                message: `<i class="red exclamation triangle icon"></i> Found a matching capture device but couldn't connect to it${lastVideoError && lastVideoError.name ? ` (${lastVideoError.name})` : ''}. Try again, or pick the device manually.`
+            });
+            if (typeof openDeviceSelectDialog === 'function') openDeviceSelectDialog();
             return;
         }
 
