@@ -243,6 +243,15 @@
                     </table>
                 </div>
 
+                <!-- AI-assisted addition for #11 -->
+                <div class="settings-field">
+                    <label>Capture Device</label>
+                    <p class="field-description">Manually choose which video/audio device to use — useful for multiple DezKVM-Go units on one computer, or browsers that can't auto-detect the device.</p>
+                    <button class="ui basic button" onclick="if (typeof openDeviceSelectDialog === 'function') openDeviceSelectDialog();">
+                        <i class="video icon"></i> Select Capture Device
+                    </button>
+                </div>
+
                 <div class="settings-field">
                     <label>Fullscreen</label>
                     <p class="field-description">Enter or exit browser fullscreen mode.</p>

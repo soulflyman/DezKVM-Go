@@ -108,6 +108,9 @@
     <!-- Settings Overlay -->
     <div id="settings-overlay"></div>
 
+    <!-- Device Select Dialog (AI-assisted addition for #11: manual capture-device picker) -->
+    <div id="deviceSelectDialog"></div>
+
     <!-- KVM Connect Prompt -->
     <div id="kvmConnectPrompt">
         <div class="kvm-prompt-panel">
@@ -208,6 +211,9 @@
         });
         $("#settings-overlay").load('settings.html', function() {
             console.log('Settings loaded');
+        });
+        $("#deviceSelectDialog").load('device-select.html', function() {
+            console.log('Device Select dialog loaded');
         });
         // Screenshot functionality
         document.getElementById('screenshotBtn').addEventListener('click', async function() {

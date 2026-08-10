@@ -10,6 +10,10 @@
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
+
+    Sections of this file marked "AI-assisted fix for #11" or "AI-assisted diagnostic for #11"
+    were written by an AI coding assistant (Claude) to address
+    https://github.com/tobychui/DezKVM-Go/issues/11.
 */
 
 /*
@@ -58,6 +62,11 @@ async function requestSerialPort() {
         }
         serialPort = await navigator.serial.requestPort();
         const baudRate = getSelectedBaudrate();
+        // AI-assisted diagnostic for #11: log the baudrate actually used to open the port,
+        // in case settings.html's baudrate radios haven't finished their async load yet
+        // when the user pairs immediately on page load (getSelectedBaudrate() would then
+        // silently fall back to the 115200 default instead of the device's real baudrate).
+        console.log(`Opening serial port at baudrate ${baudRate}`);
         await serialPort.open({ baudRate: baudRate });
         serialReader = serialPort.readable.getReader();
         serialWriter = serialPort.writable.getWriter();
@@ -78,13 +87,38 @@ async function requestSerialPort() {
                 classProgress: 'green',
                 displayTime: 800,
             })
-            await controller.softReset();
+            // AI-assisted fix for #11: the softReset() result used to be discarded, so a
+            // pairing that "succeeded" (port opened fine) but never got a reply from the
+            // HID chip - the exact "paired but nothing forwards, no errors" symptom - was
+            // completely silent. Surface both the timeout and hard-failure cases.
+            try {
+                const result = await controller.softReset();
+                if (!result || result.success === false) {
+                    console.warn('Soft reset got no reply from the HID device (timeout).');
+                    $('body').toast({
+                        message: '<i class="yellow warning sign icon"></i> Paired, but the device did not respond to the initial handshake. Keyboard/mouse input may not work — check the baudrate and cable, then try reconnecting.',
+                        class: 'warning'
+                    });
+                }
+            } catch (resetErr) {
+                console.error('Soft reset failed:', resetErr);
+                $('body').toast({
+                    message: `<i class="red exclamation triangle icon"></i> Failed to initialize HID device: ${resetErr.message}`,
+                    class: 'error'
+                });
+            }
         }, 100);
     } catch (e) {
         updateSelectedPortDisplay(null);
+        // AI-assisted fix for #11: this used to swallow every error with the alert()
+        // commented out, so a genuine failure to open/connect (as opposed to the user
+        // cancelling the native port picker, which is NotFoundError) was invisible.
         if (e.name !== 'NotFoundError') {
-            // Only show alert if not user cancellation
-           // alert('Failed to open serial port');
+            console.error('Failed to open serial port:', e);
+            $('body').toast({
+                message: `<i class="red exclamation triangle icon"></i> Failed to connect to serial device: ${e.message || e.name}`,
+                class: 'error'
+            });
         }
     } finally {
         // Reset the flag regardless of success or failure
@@ -289,6 +323,9 @@ class HIDController {
         }
         
         // Timeout - clear buffer and resolve (fallback to old behavior)
+        // AI-assisted diagnostic for #11: this used to fail completely silently. Keep the
+        // resolve-not-reject contract (callers rely on it), just make timeouts visible.
+        console.warn(`Serial command timed out waiting for reply (cmd 0x${replyCmd.toString(16)})`);
         serialReadBuffer = [];
         return Promise.resolve({ success: false, timeout: true });
     }
@@ -552,29 +589,56 @@ let isMouseDown = false;
 let lastX = 0;
 let lastY = 0;
 
+// AI-assisted fix for #11: serial write failures from mouse/keyboard handlers used to be
+// either unhandled promise rejections (mouse - no try/catch at all) or silently swallowed
+// (keyboard - catch with no distinction from "unsupported key"). Either way, a broken HID
+// link after a successful pairing produced zero visible symptoms, matching the "paired but
+// nothing forwards, no errors anywhere" report. Rate-limited so a dead link during
+// continuous mousemove doesn't spam toasts.
+let lastSerialErrorToastTime = 0;
+function reportSerialWriteError(err) {
+    console.error('Serial write failed:', err);
+    const now = Date.now();
+    if (now - lastSerialErrorToastTime > 4000) {
+        lastSerialErrorToastTime = now;
+        $('body').toast({
+            message: '<i class="red exclamation triangle icon"></i> Lost connection to HID device. Try reconnecting the serial port.',
+            class: 'error'
+        });
+    }
+}
+
 // Mouse down
 videoOverlayElement.addEventListener('mousedown', async (e) => {
     isMouseDown = true;
     lastX = e.clientX;
     lastY = e.clientY;
-    if (e.button === 0) {
-        await controller.MouseButtonPress(0x01); // Left
-    } else if (e.button === 2) {
-        await controller.MouseButtonPress(0x02); // Right
-    } else if (e.button === 1) {
-        await controller.MouseButtonPress(0x03); // Middle
+    try {
+        if (e.button === 0) {
+            await controller.MouseButtonPress(0x01); // Left
+        } else if (e.button === 2) {
+            await controller.MouseButtonPress(0x02); // Right
+        } else if (e.button === 1) {
+            await controller.MouseButtonPress(0x03); // Middle
+        }
+    } catch (err) {
+        reportSerialWriteError(err);
     }
 });
 
 // Mouse up
 videoOverlayElement.addEventListener('mouseup', async (e) => {
     isMouseDown = false;
-    if (e.button === 0) {
-        await controller.MouseButtonRelease(0x01); // Left
-    } else if (e.button === 2) {
-        await controller.MouseButtonRelease(0x02); // Right
-    } else if (e.button === 1) {
-        await controller.MouseButtonRelease(0x03); // Middle
+    try {
+        if (e.button === 0) {
+            await controller.MouseButtonRelease(0x01); // Left
+        } else if (e.button === 2) {
+            await controller.MouseButtonRelease(0x02); // Right
+        } else if (e.button === 1) {
+            await controller.MouseButtonRelease(0x03); // Middle
+        }
+    } catch (err) {
+        reportSerialWriteError(err);
     }
 });
 
@@ -907,35 +971,39 @@ videoOverlayElement.addEventListener('click', function () {
 
 // Mouse move – supports both absolute and relative modes
 videoOverlayElement.addEventListener('mousemove', async (e) => {
-    if (controller.Config.AbsoluteMode) {
-        // Absolute positioning
-        const rect = videoOverlayElement.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        const width = rect.width;
-        const height = rect.height;
-        const offsetX = x / width;
-        const offsetY = y / height;
+    try {
+        if (controller.Config.AbsoluteMode) {
+            // Absolute positioning
+            const rect = videoOverlayElement.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const width = rect.width;
+            const height = rect.height;
+            const offsetX = x / width;
+            const offsetY = y / height;
 
-        const absX = Math.round(offsetX * 4095);
-        const absY = Math.round(offsetY * 4095);
-        controller.hidState.MousePosition.x = absX;
-        controller.hidState.MousePosition.y = absY;
-        await controller.MouseMoveAbsolute(absX & 0xFF, (absX >> 8) & 0xFF, absY & 0xFF, (absY >> 8) & 0xFF);
-    } else {
-        // Relative positioning – use movementX/Y for pointer-locked delta
-        let dx = Math.round(e.movementX * relativeMouseSensitivity);
-        let dy = Math.round(e.movementY * relativeMouseSensitivity);
+            const absX = Math.round(offsetX * 4095);
+            const absY = Math.round(offsetY * 4095);
+            controller.hidState.MousePosition.x = absX;
+            controller.hidState.MousePosition.y = absY;
+            await controller.MouseMoveAbsolute(absX & 0xFF, (absX >> 8) & 0xFF, absY & 0xFF, (absY >> 8) & 0xFF);
+        } else {
+            // Relative positioning – use movementX/Y for pointer-locked delta
+            let dx = Math.round(e.movementX * relativeMouseSensitivity);
+            let dy = Math.round(e.movementY * relativeMouseSensitivity);
 
-        // Clamp to signed-byte range (-127 to 127, skip 0x80)
-        dx = Math.max(-127, Math.min(127, dx));
-        dy = Math.max(-127, Math.min(127, dy));
+            // Clamp to signed-byte range (-127 to 127, skip 0x80)
+            dx = Math.max(-127, Math.min(127, dx));
+            dy = Math.max(-127, Math.min(127, dy));
 
-        // Convert to unsigned byte for the HID packet
-        if (dx < 0) dx = 256 + dx;
-        if (dy < 0) dy = 256 + dy;
+            // Convert to unsigned byte for the HID packet
+            if (dx < 0) dx = 256 + dx;
+            if (dy < 0) dy = 256 + dy;
 
-        await controller.MouseMoveRelative(dx, dy, 0);
+            await controller.MouseMoveRelative(dx, dy, 0);
+        }
+    } catch (err) {
+        reportSerialWriteError(err);
     }
 });
 
@@ -950,13 +1018,17 @@ let scrollSensitivity = 2; // Default scroll sensitivity
 videoOverlayElement.addEventListener('wheel', async (e) => {
     e.preventDefault();
     let tilt = e.deltaY > 0 ? scrollSensitivity : -scrollSensitivity;
-    
+
     // Check if scroll inversion is enabled
     if (invertScrollEnabled) {
         tilt = -tilt;
     }
-    
-    await controller.MouseScroll(tilt);
+
+    try {
+        await controller.MouseScroll(tilt);
+    } catch (err) {
+        reportSerialWriteError(err);
+    }
 });
 
 // Check if the event target is a text input element
@@ -989,9 +1061,15 @@ window.addEventListener('keydown', async (e) => {
         } else {
             await controller.SendKeyboardPress(e.keyCode);
         }
-       
+
     } catch (err) {
-        // Ignore unsupported keys
+        // AI-assisted fix for #11: this used to swallow every error, conflating a genuinely
+        // unsupported keycode (expected, silent) with a real serial write failure (was
+        // invisible - part of the "paired but nothing forwards" symptom). Only stay silent
+        // for the known/expected case.
+        if (!(typeof err.message === 'string' && err.message.startsWith('Unsupported keycode'))) {
+            reportSerialWriteError(err);
+        }
     }
 });
 
@@ -1015,7 +1093,10 @@ window.addEventListener('keyup', async (e) => {
         }
         e.preventDefault();
     } catch (err) {
-        // Ignore unsupported keys
+        // AI-assisted fix for #11: see the matching keydown handler above.
+        if (!(typeof err.message === 'string' && err.message.startsWith('Unsupported keycode'))) {
+            reportSerialWriteError(err);
+        }
     }
 });
 
@@ -1230,108 +1311,197 @@ function isLinuxChromium() {
     return /Linux/.test(ua) && /Chrome\//.test(ua) && !/Android/.test(ua);
 }
 
-function findDevice(devices, type, vid, pid) {
-    // Spec doesn't define how to find a device with specified VID/PID
-    // Chrome appends (vid:pid) to the device label
-    const pattern = new RegExp(`\\(${vid}:${pid}\\)\\s*$`, 'i');
-    const found = devices.find(x => x.kind === type && pattern.test(x.label));
-    if (found) {
-        return { device: found, exact: true };
+// AI-assisted fix for #11: findDevice() used to try exact-match, then fall back to a
+// pidOnly heuristic, *within a single VID:PID pair* before the caller ever got to try the
+// next pair's exact match. Since both known DezKVM-Go pairs share PID '2109', the pidOnly
+// fallback on the first pair (Gen1) was winning before Gen2's exact match ever got a chance,
+// causing both false "could not confirm" warnings and Gen2 units being misidentified as Gen1.
+// matchDevicesForPair() below only reports what matched for ONE pair/tier; the tiering across
+// ALL pairs is now handled by findAllCandidates().
+function matchDevicesForPair(devices, type, vid, pid) {
+    const exactPattern = new RegExp(`\\(${vid}:${pid}\\)\\s*$`, 'i');
+    const pidPattern = new RegExp(pid, 'i');
+    return {
+        exact: devices.filter(x => x.kind === type && exactPattern.test(x.label)),
+        pidOnly: devices.filter(x => x.kind === type && pidPattern.test(x.label)),
+    };
+}
+
+// Returns an ordered list of { device, pair, tier } candidates. Tier 1 (exact) is exhausted
+// across ALL supportedVidPidPairs before tier 2 (pidOnly) is even attempted, and tier 2 is
+// exhausted across all pairs before tier 3 (Linux "any device") is attempted.
+function findAllCandidates(devices, type, supportedVidPidPairs) {
+    const exactCandidates = [];
+    const pidOnlyCandidates = [];
+    const seenExact = new Set();
+    const seenPidOnly = new Set();
+
+    for (const pair of supportedVidPidPairs) {
+        const { exact, pidOnly } = matchDevicesForPair(devices, type, pair.vid, pair.pid);
+        for (const device of exact) {
+            if (seenExact.has(device.deviceId)) continue;
+            seenExact.add(device.deviceId);
+            exactCandidates.push({ device, pair, tier: 'exact' });
+        }
+        for (const device of pidOnly) {
+            if (seenPidOnly.has(device.deviceId)) continue;
+            seenPidOnly.add(device.deviceId);
+            pidOnlyCandidates.push({ device, pair, tier: 'pidOnly' });
+        }
     }
 
-    // Some host drivers (e.g. RaspiOS/V4L2 on Argon ONE UP CM5, see #8) don't pass the
-    // USB vid:pid through to the browser at all, labeling the device as just "2109 (V4L2)"
-    // or "2109 Analog Stereo". Fall back to matching the PID alone in the label.
-    const pidOnly = devices.find(x => x.kind === type && new RegExp(pid, 'i').test(x.label));
-    if (pidOnly) {
-        return { device: pidOnly, exact: false };
-    }
+    if (exactCandidates.length > 0) return exactCandidates;
+    if (pidOnlyCandidates.length > 0) return pidOnlyCandidates;
 
-    // Temporary workaround for #1 - not sure why this check can't pass Ubuntu 26.04 Chrome
+    // Temporary workaround for #1 - not sure why the pidOnly check can't pass Ubuntu 26.04 Chrome
     if (isLinuxChromium()) {
         const anyDevice = devices.find(x => x.kind === type);
         if (anyDevice) {
-            return { device: anyDevice, exact: false };
+            return [{ device: anyDevice, pair: null, tier: 'linuxAny' }];
         }
     }
-    return null;
+    return [];
 }
 
-async function startStream() {
-    try {
-        // Only getUserMedia triggers the permission popup, enumerateDevices won't
-        await requestMediaDevicePermission();
+function isDeviceBusyOrBlockedError(e) {
+    // Device exists but can't be opened right now - most likely already claimed exclusively
+    // by another tab/session (e.g. a second DezKVM-Go unit's video device, see #11).
+    // Deliberately excludes NotAllowedError (permission denial) - that's not a busy device,
+    // and misclassifying it here would mean silently trying every candidate and reporting
+    // the wrong diagnosis ("check the device connection" instead of a permissions problem).
+    return e && ['NotReadableError', 'TrackStartError'].includes(e.name);
+}
 
-        const devices = await window.navigator.mediaDevices.enumerateDevices();
+let streamStarting = false;
+let lastWarnedDeviceId = null;
+
+async function startStream() {
+    if (streamStarting) return;
+    streamStarting = true;
+    try {
+        // Only call getUserMedia (which triggers the permission popup) if device labels
+        // aren't already populated - repeating it on every call is unnecessary churn that
+        // was contributing to the Windows+Chrome video flicker reported in #11.
+        let devices = await window.navigator.mediaDevices.enumerateDevices();
+        const hasLabels = devices.some(d => d.kind === 'videoinput' && d.label);
+        if (!hasLabels) {
+            await requestMediaDevicePermission();
+            devices = await window.navigator.mediaDevices.enumerateDevices();
+        }
+
         const supportedVidPidPairs = [
             { vid: '534d', pid: '2109' , product: "DezKVM-Go Original"}, // MS2109, original DezKVM-Go
             { vid: '345f', pid: '2109' , product: "DezKVM-Go Gen2"}, // DezKVM-Go gen2
         ]
-        let videoDevice = null;
-        let audioDevice = null;
-        let fuzzyMatch = false;
-        for (const { vid, pid, product } of supportedVidPidPairs) {
-            const videoMatch = findDevice(devices, 'videoinput', vid, pid);
-            const audioMatch = findDevice(devices, 'audioinput', vid, pid);
-            if (videoMatch && audioMatch) {
-                videoDevice = videoMatch.device;
-                audioDevice = audioMatch.device;
-                fuzzyMatch = !videoMatch.exact || !audioMatch.exact;
-                console.log(`Found video device with VID:PID ${vid}:${pid}`);
-                productId = product;
-                break;
-            }
+
+        let videoCandidates = findAllCandidates(devices, 'videoinput', supportedVidPidPairs);
+
+        // A manually-picked device (see device-select.js) always takes priority, but is still
+        // tried through the same acquisition/retry loop below rather than bypassing it.
+        let manualSelection = null;
+        if (typeof resolveManualDeviceSelection === 'function') {
+            manualSelection = resolveManualDeviceSelection(devices);
+        }
+        if (manualSelection && manualSelection.videoDevice) {
+            videoCandidates = videoCandidates.filter(c => c.device.deviceId !== manualSelection.videoDevice.deviceId);
+            videoCandidates.unshift({ device: manualSelection.videoDevice, pair: null, tier: 'manual' });
         }
 
-        if (!videoDevice) {
+        if (videoCandidates.length === 0) {
             console.error('MS2109 video device not found');
             $('body').toast({
                 message: '<i class="red exclamation triangle icon"></i> MS2109 video capture device not found. Please connect the device and try again.'
             });
 
             // Print all connected video devices for debugging
+            const anyVideoDevices = devices.filter(d => d.kind === 'videoinput');
             console.log('Connected video devices:');
-            devices.filter(d => d.kind === 'videoinput').forEach(d => console.log(`- ${d.label} (id: ${d.deviceId})`));
+            anyVideoDevices.forEach(d => console.log(`- ${d.label} (id: ${d.deviceId})`));
+
+            // See #11: on browsers/hosts where auto-detection can't find the device at all
+            // (e.g. Firefox never exposes VID/PID), offer manual selection as a fallback -
+            // but only if there's actually something to pick from. Auto-opening an empty
+            // dialog when nothing is plugged in yet would also block the devicechange
+            // handler (it skips restarting the stream while the dialog is open) from ever
+            // picking up the device once it's connected.
+            if (anyVideoDevices.length > 0 && typeof openDeviceSelectDialog === 'function') {
+                openDeviceSelectDialog();
+            }
             return;
+        }
+
+        // Try each candidate device in tier order, and each supported mode per candidate.
+        // If a candidate throws a "busy/blocked" error (most likely already opened
+        // exclusively by another session - see #11's multi-device case), abandon it
+        // immediately rather than burning through every mode against a dead device, and
+        // move on to the next candidate (e.g. a second physical DezKVM-Go unit).
+        let videoStream = null;
+        let chosenCandidate = null;
+        for (const candidate of videoCandidates) {
+            for (const mode of MODE_LIST) {
+                try {
+                    videoStream = await window.navigator.mediaDevices.getUserMedia({
+                        video: {
+                            deviceId: { exact: candidate.device.deviceId },
+                            width: { exact: mode.width },
+                            height: { exact: mode.height },
+                            frameRate: { exact: mode.frameRate },
+                        },
+                    });
+                    console.log(`Video stream started: ${mode.width}x${mode.height} @ ${mode.frameRate}fps (device: ${candidate.device.label || candidate.device.deviceId})`);
+                    chosenCandidate = candidate;
+                    break;
+                } catch (e) {
+                    console.log(`Failed to start video stream with mode ${mode.width}x${mode.height}@${mode.frameRate}fps:`, e);
+                    if (isDeviceBusyOrBlockedError(e)) {
+                        console.warn(`Device "${candidate.device.label || candidate.device.deviceId}" appears to be in use elsewhere; trying next candidate if available.`);
+                        break; // abandon this candidate, try the next one
+                    }
+                    // Otherwise keep trying the next mode for the same candidate
+                }
+            }
+            if (videoStream) break;
+        }
+
+        if (!videoStream || !chosenCandidate) {
+            console.error('Failed to start video stream with all candidates/modes');
+            alert('Failed to start video stream. Please check the device connection.');
+            return;
+        }
+
+        productId = chosenCandidate.pair ? chosenCandidate.pair.product : "Generic";
+
+        // Confirmation warning is keyed on the VIDEO candidate's match tier only. Audio
+        // labels on Windows rarely carry (vid:pid) even for an exact video match, so
+        // factoring audio tier into this check (as the old code did) produced false
+        // warnings on exact video matches - see #11.
+        const isFuzzy = chosenCandidate.tier !== 'exact' && chosenCandidate.tier !== 'manual';
+        if (isFuzzy && lastWarnedDeviceId !== chosenCandidate.device.deviceId) {
+            lastWarnedDeviceId = chosenCandidate.device.deviceId;
+            console.warn(`Video device VID:PID could not be confirmed from the device label (label was "${chosenCandidate.device.label}"). Matched by fallback heuristic - this may not be the correct capture device.`);
+            $('body').toast({
+                message: '<i class="yellow warning sign icon"></i> Capture device VID:PID could not be confirmed. If this is the wrong device, please disconnect other v4l2 devices and reload the page, or pick it manually from Settings.'
+            });
+        } else if (!isFuzzy) {
+            lastWarnedDeviceId = null;
+        }
+
+        // Resolve audio: prefer a manually-picked audio device, then a device sharing the
+        // chosen video device's groupId (same physical capture card), then fall back to
+        // tiered VID:PID matching. Never let a missing/non-exact audio match block video.
+        let audioDevice = null;
+        if (manualSelection && manualSelection.audioDevice) {
+            audioDevice = manualSelection.audioDevice;
+        } else {
+            audioDevice = devices.find(d => d.kind === 'audioinput' && d.groupId && d.groupId === chosenCandidate.device.groupId) || null;
+            if (!audioDevice) {
+                const audioCandidates = findAllCandidates(devices, 'audioinput', supportedVidPidPairs);
+                if (audioCandidates.length > 0) audioDevice = audioCandidates[0].device;
+            }
         }
 
         if (!audioDevice) {
             console.warn('MS2109 audio device not found');
-        }
-
-        if (fuzzyMatch) {
-            // See #1: some host drivers (RaspiOS/V4L2) don't expose the vid:pid in the
-            // device label, so the device was matched by PID substring / heuristic only.
-            console.warn(`Video/audio device VID:PID could not be confirmed from the device label (label was "${videoDevice.label}"). Matched by fallback heuristic - this may not be the correct capture device.`);
-            $('body').toast({
-                message: '<i class="yellow warning sign icon"></i> Capture device VID:PID could not be confirmed. If this is the wrong device, please disconnect other v4l2 devices and reload the page.'
-            });
-        }
-
-        // Try different video modes
-        let videoStream = null;
-        for (const mode of MODE_LIST) {
-            try {
-                videoStream = await window.navigator.mediaDevices.getUserMedia({
-                    video: {
-                        deviceId: { exact: videoDevice.deviceId },
-                        width: { exact: mode.width },
-                        height: { exact: mode.height },
-                        frameRate: { exact: mode.frameRate },
-                    },
-                });
-                console.log(`Video stream started: ${mode.width}x${mode.height} @ ${mode.frameRate}fps`);
-                break;
-            } catch (e) {
-                console.log(`Failed to start video stream with mode ${mode.width}x${mode.height}@${mode.frameRate}fps:`, e);
-                // Continue to next mode
-            }
-        }
-
-        if (!videoStream) {
-            console.error('Failed to start video stream with all modes');
-            alert('Failed to start video stream. Please check the device connection.');
-            return;
         }
 
         document.getElementById('video').srcObject = videoStream;
@@ -1414,6 +1584,8 @@ async function startStream() {
     } catch (e) {
         console.error('Unable to access media devices:', e);
         alert('Unable to access media devices: ' + e.message);
+    } finally {
+        streamStarting = false;
     }
 }
 
@@ -1502,9 +1674,27 @@ document.getElementById('kvmConnectBtn').addEventListener('click', () => {
     }
 })();
 
+// AI-assisted fix for #11: Chrome on Windows fires 'devicechange' spuriously and
+// repeatedly (including as a side effect of the getUserMedia churn startStream() itself
+// causes), so calling startStream() unconditionally on every event was the source of the
+// reported video flicker and the repeated "could not confirm" toast. Debounce, and skip
+// entirely when the current stream is still healthy or a device-selection preview is open.
+let deviceChangeDebounceTimer = null;
 navigator.mediaDevices.addEventListener('devicechange', () => {
-   startStream();
+    if (deviceChangeDebounceTimer) clearTimeout(deviceChangeDebounceTimer);
+    deviceChangeDebounceTimer = setTimeout(handleDeviceChange, 750);
 });
+
+async function handleDeviceChange() {
+    if (typeof isDeviceSelectDialogOpen === 'function' && isDeviceSelectDialogOpen()) return;
+    const track = window.currentStream && window.currentStream.getVideoTracks()[0];
+    if (track && track.readyState === 'live') {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const stillPresent = devices.some(d => d.deviceId === track.getSettings().deviceId);
+        if (stillPresent) return; // Healthy stream, ignore the spurious devicechange
+    }
+    await startStream();
+}
 
 /*
     Test-Pattern (Color-Bar) Detection
