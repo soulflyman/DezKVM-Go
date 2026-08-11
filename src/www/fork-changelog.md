@@ -35,3 +35,7 @@ This is a community fork of [tobychui/DezKVM-Go](https://github.com/tobychui/Dez
 ## Paste to Remote reliability (AI-assisted)
 
 - Fixed the Paste to Remote modal getting permanently stuck showing "Sending..." if the serial port wasn't connected (or dropped mid-paste): the old "not connected" check never actually detected this case, and any error partway through sending left the Send/Cancel buttons and progress bar stuck with no way to recover except reloading the page. Sending now correctly detects a missing serial connection up front, and always restores the UI afterward regardless of how sending ends. Also fixed a related issue where a failed keystroke mid-paste could leave Shift or AltGr stuck "held," corrupting subsequent keystrokes (including live typing) until reload.
+
+## Offline-capable dependencies (AI-assisted)
+
+- Removed the last runtime dependency on an external CDN: Fomantic-UI (2.9.4, already the latest release) is now vendored locally under `scripts/fomantic-ui/` instead of being loaded from `cdnjs.cloudflare.com`, alongside the already-local jQuery. This is a step toward the app being installable/usable with no internet connection (e.g. as a PWA); it does not change any behavior. jQuery was left on 3.7.1 (the latest 3.x release) rather than bumped to the newly-released jQuery 4.0.0, since Fomantic-UI's jQuery-based modules haven't confirmed compatibility with that breaking major version.
