@@ -53,34 +53,32 @@ function updateSelectedPortDisplay(port) {
     }
 }
 
-// Request a new serial port
-async function requestSerialPort() {
-    try {
-        // Disconnect previous port if connected
-        if (serialPort) {
-            await disconnectSerialPort();
-        }
-        serialPort = await navigator.serial.requestPort();
-        const baudRate = getSelectedBaudrate();
-        // AI-assisted diagnostic for #11: log the baudrate actually used to open the port,
-        // in case settings.html's baudrate radios haven't finished their async load yet
-        // when the user pairs immediately on page load (getSelectedBaudrate() would then
-        // silently fall back to the 115200 default instead of the device's real baudrate).
-        console.log(`Opening serial port at baudrate ${baudRate}`);
-        await serialPort.open({ baudRate: baudRate });
-        serialReader = serialPort.readable.getReader();
-        serialWriter = serialPort.writable.getWriter();
-        updateSelectedPortDisplay(serialPort);
+// Open an already-selected (permission-granted) SerialPort and start the read loop +
+// CH9329 handshake. Shared by requestSerialPort() (after a fresh requestPort() prompt)
+// and tryAutoReconnectSerialPort() (after a silent getPorts()/'connect' resolution) so
+// both paths end up in the same connected state.
+async function openSerialPortConnection(port) {
+    const baudRate = getSelectedBaudrate();
+    // AI-assisted diagnostic for #11: log the baudrate actually used to open the port,
+    // in case settings.html's baudrate radios haven't finished their async load yet
+    // when the user pairs immediately on page load (getSelectedBaudrate() would then
+    // silently fall back to the 115200 default instead of the device's real baudrate).
+    console.log(`Opening serial port at baudrate ${baudRate}`);
+    await port.open({ baudRate: baudRate });
+    serialPort = port;
+    serialReader = serialPort.readable.getReader();
+    serialWriter = serialPort.writable.getWriter();
+    updateSelectedPortDisplay(serialPort);
 
-        // Change button to indicate connected state
-        document.getElementById('selectSerialPort').classList.add('negative');
-        document.querySelector('#selectSerialPort i').className = 'unlink icon';
+    // Change button to indicate connected state
+    document.getElementById('selectSerialPort').classList.add('negative');
+    document.querySelector('#selectSerialPort i').className = 'unlink icon';
 
-        // Start reading loop for incoming data
-        readSerialLoop();
+    // Start reading loop for incoming data
+    readSerialLoop();
 
-        // Send a softReset command to the CH9329 to ensure it's in a known state
-        setTimeout(async () => {
+    // Send a softReset command to the CH9329 to ensure it's in a known state
+    setTimeout(async () => {
             $.toast({
                 message: 'Initializing remote HID device...',
                 showProgress: 'bottom',
@@ -130,6 +128,19 @@ async function requestSerialPort() {
                 });
             }
         }, 100);
+}
+
+// Request a new serial port (always shows the native port picker - use
+// tryAutoReconnectSerialPort() instead when a previously-granted port should be
+// reopened silently).
+async function requestSerialPort() {
+    try {
+        // Disconnect previous port if connected
+        if (serialPort) {
+            await disconnectSerialPort();
+        }
+        const port = await navigator.serial.requestPort();
+        await openSerialPortConnection(port);
     } catch (e) {
         updateSelectedPortDisplay(null);
         // AI-assisted fix for #11: this used to swallow every error with the alert()
@@ -150,24 +161,50 @@ async function requestSerialPort() {
     }
 }
 
-// Disconnect serial port
-async function disconnectSerialPort() {
+// Silently reconnect to a previously permission-granted serial port, without showing the
+// native port picker. Used on page load (candidatePort omitted -> resolved via
+// getPorts()) and from the 'connect' event fired when a paired device is replugged
+// (candidatePort = event.target, so there's no ambiguity about which port it is).
+async function tryAutoReconnectSerialPort(candidatePort) {
+    if (serialPort || selectingSerialPort) return;
+    selectingSerialPort = true;
     try {
-        if (serialReader) {
-            await serialReader.cancel();
-            serialReader.releaseLock();
-            serialReader = null;
+        let port = candidatePort;
+        if (!port) {
+            const ports = await navigator.serial.getPorts();
+            if (ports.length !== 1) return; // none, or ambiguous - leave to manual selection
+            port = ports[0];
         }
-        if (serialWriter) {
-            serialWriter.releaseLock();
-            serialWriter = null;
-        }
-        if (serialPort) {
-            await serialPort.close();
-            serialPort = null;
-        }
-    } catch (e) {}
+        await openSerialPortConnection(port);
+    } catch (e) {
+        console.warn('Auto-reconnect to serial port failed:', e);
+        updateSelectedPortDisplay(null);
+    } finally {
+        selectingSerialPort = false;
+    }
+}
+
+// Disconnect serial port. Each resource is cleaned up in its own try/catch so that a
+// rejection from one step (expected right after a physical unplug, e.g. reader.cancel()
+// on a stream that's already errored) can't leave the others stale.
+async function disconnectSerialPort() {
+    if (serialReader) {
+        try { await serialReader.cancel(); } catch (e) {}
+        try { serialReader.releaseLock(); } catch (e) {}
+        serialReader = null;
+    }
+    if (serialWriter) {
+        try { serialWriter.releaseLock(); } catch (e) {}
+        serialWriter = null;
+    }
+    if (serialPort) {
+        try { await serialPort.close(); } catch (e) {}
+        serialPort = null;
+    }
     updateSelectedPortDisplay(null);
+    // Reset button back to disconnected state
+    document.getElementById('selectSerialPort').classList.remove('negative');
+    document.querySelector('#selectSerialPort i').className = 'keyboard icon';
 }
 
 // Read loop for incoming serial data, dispatches 'data' events on parent
@@ -197,12 +234,25 @@ async function sendSerial(data) {
 document.getElementById('selectSerialPort').addEventListener('click', function(){
     if (serialPort) {
         disconnectSerialPort();
-        document.getElementById('selectSerialPort').classList.remove('negative');
-        document.querySelector('#selectSerialPort i').className = 'keyboard icon';
     } else {
         requestSerialPort();
     }
 });
+
+// Silently reconnect to a previously-granted serial port on load, and mirror the
+// devicechange-driven video auto-reconnect (local-kvm.js ~2100) for physical
+// unplug/replug of the serial device.
+if ('serial' in navigator) {
+    navigator.serial.addEventListener('connect', (e) => {
+        tryAutoReconnectSerialPort(e.target);
+    });
+    navigator.serial.addEventListener('disconnect', (e) => {
+        if (e.target === serialPort) {
+            disconnectSerialPort();
+        }
+    });
+    tryAutoReconnectSerialPort();
+}
 
 /*
     CH9329 HID bytecode converter
