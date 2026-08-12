@@ -14,6 +14,7 @@ This is a community fork of [tobychui/DezKVM-Go](https://github.com/tobychui/Dez
 
 - Surfaced previously-silent serial connection/write errors as toast notifications instead of failing invisibly, which was part of the "input paired but nothing forwards, no errors" symptom.
 - Removed a false-positive "initial handshake failed" warning after pairing — the underlying handshake retry logic remains, but the warning proved to be an unreliable indicator on some setups (input worked fine despite it firing), so it's now a console log only rather than a user-facing toast.
+- Fixed the serial (keyboard/mouse) connection requiring the port to be manually re-picked every time the KVM device was unplugged and replugged, unlike video which already reconnected automatically. The app now calls `navigator.serial.getPorts()` on load and listens for the Web Serial `connect`/`disconnect` events, so a previously-granted port is silently reopened on replug (and on page reload) with no native picker prompt, and the "Connect Serial" button correctly flips to disconnected immediately on unplug instead of only after a failed write. Chromium-based browsers only, same platform boundary as the rest of Web Serial.
 
 ## Display settings
 
