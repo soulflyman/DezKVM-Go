@@ -1521,12 +1521,37 @@ const MODE_LIST = [
     { width: 1920, height: 1080, frameRate: 25 },
 ];
 
+// AI-assisted addition: on Firefox (which never puts VID:PID in device labels), the manual
+// device-select dialog used to make the user pick a device that Firefox's own native
+// permission prompt already resolved a moment earlier. Remember that choice here (deviceId
+// with a label fallback, since we don't know ahead of time which one Firefox populates on a
+// stopped/discarded stream) so startStream()/openDeviceSelectDialog() can reuse it instead of
+// asking again. Page-session only (not persisted) - see startStream()'s use of this for why.
+let browserPickedVideoDevice = null;
+
+function resolveBrowserPickedVideoDeviceId(devices) {
+    if (!browserPickedVideoDevice) return null;
+    const byId = devices.find(d => d.kind === 'videoinput' && d.deviceId === browserPickedVideoDevice.deviceId);
+    if (byId) return byId.deviceId;
+    if (browserPickedVideoDevice.label) {
+        const byLabel = devices.find(d => d.kind === 'videoinput' && d.label === browserPickedVideoDevice.label);
+        if (byLabel) return byLabel.deviceId;
+    }
+    return null;
+}
+
 async function requestMediaDevicePermission() {
     // Request any media device to trigger the permission popup
     const stream = await window.navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true,
     });
+
+    const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) {
+        const settings = videoTrack.getSettings();
+        browserPickedVideoDevice = { deviceId: settings.deviceId, label: videoTrack.label };
+    }
 
     // Stop all tracks so they can be requested again
     for (const track of stream.getTracks()) {
@@ -1652,6 +1677,27 @@ async function startStream() {
         }
 
         if (videoCandidates.length === 0) {
+            const anyVideoDevices = devices.filter(d => d.kind === 'videoinput');
+
+            // AI-assisted addition: VID:PID auto-detection can't identify anything on Firefox
+            // (see resolveBrowserPickedVideoDeviceId() above). If there's exactly one video
+            // device on the whole system, there's nothing ambiguous to ask about - reuse the
+            // device Firefox's own native permission prompt already resolved, instead of
+            // making the user pick it again in the manual dialog. Deliberately restricted to
+            // the single-device case: with more than one camera (e.g. a laptop webcam plus the
+            // capture card), silently trusting the browser's default pick could stream the
+            // wrong device with no preview shown - that ambiguous case still falls through to
+            // openDeviceSelectDialog() below, which now pre-selects this same device (see
+            // device-select.js) rather than defaulting to the first one in the list.
+            if (anyVideoDevices.length === 1) {
+                const pickedId = resolveBrowserPickedVideoDeviceId(devices);
+                if (pickedId) {
+                    videoCandidates = [{ device: anyVideoDevices[0], pair: null, tier: 'browserPicked' }];
+                }
+            }
+        }
+
+        if (videoCandidates.length === 0) {
             console.error('MS2109 video device not found');
             $('body').toast({
                 message: '<i class="red exclamation triangle icon"></i> MS2109 video capture device not found. Please connect the device and try again.'
@@ -1750,7 +1796,7 @@ async function startStream() {
         // labels on Windows rarely carry (vid:pid) even for an exact video match, so
         // factoring audio tier into this check (as the old code did) produced false
         // warnings on exact video matches - see #11.
-        const isFuzzy = chosenCandidate.tier !== 'exact' && chosenCandidate.tier !== 'manual';
+        const isFuzzy = chosenCandidate.tier !== 'exact' && chosenCandidate.tier !== 'manual' && chosenCandidate.tier !== 'browserPicked';
         if (isFuzzy && lastWarnedDeviceId !== chosenCandidate.device.deviceId) {
             lastWarnedDeviceId = chosenCandidate.device.deviceId;
             console.warn(`Video device VID:PID could not be confirmed from the device label (label was "${chosenCandidate.device.label}"). Matched by fallback heuristic - this may not be the correct capture device.`);

@@ -171,8 +171,17 @@ async function openDeviceSelectDialog() {
 
     const manual = resolveManualDeviceSelection(devices);
     const currentVideoId = currentlyStreamingDeviceId();
+    // AI-assisted addition: when this dialog is shown because more than one video device
+    // exists (see startStream()'s single-device auto-accept in local-kvm.js), prefer
+    // pre-selecting whatever device Firefox's own native permission prompt already resolved,
+    // instead of defaulting to the first device in the list - saves a click in the common case
+    // while still letting the user change it via the dropdown/preview.
+    const browserPickedVideoId = typeof resolveBrowserPickedVideoDeviceId === 'function'
+        ? resolveBrowserPickedVideoDeviceId(devices)
+        : null;
     const preselectedVideoId = (manual && manual.videoDevice && manual.videoDevice.deviceId)
         || currentVideoId
+        || browserPickedVideoId
         || (videoDevices[0] && videoDevices[0].deviceId);
     const preselectedAudioId = (manual && manual.audioDevice && manual.audioDevice.deviceId) || '';
 
