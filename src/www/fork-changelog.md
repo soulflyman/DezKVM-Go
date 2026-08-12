@@ -29,6 +29,10 @@ This is a community fork of [tobychui/DezKVM-Go](https://github.com/tobychui/Dez
 
 - Added an optional keyboard capture mode (via the Keyboard Lock API, Chromium-based browsers only) that, while the viewer is fullscreen, captures OS-reserved key combinations such as the Windows key and Alt+Tab and forwards them to the remote instead of letting the local OS intercept them.
 
+## Stuck modifier keys (AI-assisted)
+
+- Fixed the Windows key (and other modifiers) getting stuck "held" on the remote after an OS-level hotkey stole focus away from the browser tab mid-press — for example a Quake-mode terminal bound to Win+\`, which opens on the Windows-key-down before the rest of the combo is even released to the page. The keydown was still forwarded, but its matching keyup never arrived once focus moved elsewhere, leaving the remote thinking the key was still held; returning to the tab and pressing another key (e.g. `L`) then sent an unintended combination (`Win+L` locks the remote session). The app now releases all held keys, both in the HID state and in the on-screen keyboard's own modifier/hold-mode tracking, whenever the tab loses focus (window blur) or is switched away from (tab visibility change), instead of only on a full page reload.
+
 ## Non-US keyboard layout support (AI-assisted)
 
 - Fixed live keyboard forwarding (typing, toggle-key taps, and Stacked Keys) producing wrong or missing characters on non-US keyboard layouts (e.g. German: `ß`, `ü`, `ö`, `ä`, the ISO extra key). Forwarding now uses the physical key position (`KeyboardEvent.code`) mapped through the standard USB HID Usage Table, instead of the legacy, US-layout-only `keyCode` value, so the correct physical key reaches the remote regardless of either side's configured layout.

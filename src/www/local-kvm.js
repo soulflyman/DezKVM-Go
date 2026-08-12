@@ -622,6 +622,17 @@ class HIDController {
         await this._releaseHidOpcode(hid);
     }
 
+    // AI-assisted addition: clears all held modifiers and keys, both locally and on the
+    // remote, in one report. Used to recover from "stuck" keys - e.g. a modifier whose
+    // keydown was forwarded but whose matching keyup never arrived because focus left
+    // the tab mid-press (an OS-level hotkey stealing focus, alt-tab, switching browser
+    // tabs, etc.). See the 'blur'/'visibilitychange' listeners below.
+    async ReleaseAllKeys() {
+        this.hidState.Modkey = 0x00;
+        this.hidState.KeyboardButtons = [0, 0, 0, 0, 0, 0];
+        await this.keyboardSendKeyCombinations();
+    }
+
     // Send the current key combinations (modifiers + up to 6 keys)
     async keyboardSendKeyCombinations() {
         const packet = [
@@ -1305,6 +1316,35 @@ window.addEventListener('keyup', async (e) => {
             reportSerialWriteError(err);
         }
     }
+});
+
+// AI-assisted addition: release all held keys when the tab loses focus, to fix keys
+// getting stuck "held" on the remote when a keydown is forwarded but its matching keyup
+// never reaches this page - e.g. an OS-level hotkey (such as a Quake-mode terminal bound
+// to Win+<key>) steals focus away from the browser mid-press, so the Windows key's keyup
+// never fires here and it stays stuck down remotely (which can then combine with the next
+// keypress after refocusing, e.g. Win+L locking the remote session). 'blur' covers the
+// focus leaving the browser window entirely; 'visibilitychange' additionally covers
+// switching to another browser tab, which doesn't blur the window itself.
+// Also releases the on-screen keyboard's own held-modifier/held-key UI state
+// (onscreen-keyboard.js), which tracks Shift/Ctrl/Alt and Hold Mode keys independently
+// of HIDController.hidState - otherwise its buttons could stay highlighted "held" after
+// the underlying HID state was cleared here.
+async function releaseAllInputOnFocusLoss() {
+    if (typeof releaseAllModifiers === 'function') releaseAllModifiers();
+    if (typeof releaseAllHeldKeys === 'function') releaseAllHeldKeys();
+    if (!serialPort) return;
+    try {
+        await controller.ReleaseAllKeys();
+    } catch (err) {
+        console.warn('Failed to release keys on focus loss:', err);
+    }
+}
+
+window.addEventListener('blur', releaseAllInputOnFocusLoss);
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) releaseAllInputOnFocusLoss();
 });
 
 // Baudrate change handler - reconnect with new baudrate
