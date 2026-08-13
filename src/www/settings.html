@@ -288,6 +288,14 @@
                     <div id="colorSaturationSlider" class="ui labeled ticked slider"></div>
                 </div>
 
+                <!-- AI-assisted addition -->
+                <div class="settings-field">
+                    <label>Contrast</label>
+                    <p class="field-description">Boost or reduce contrast — useful for capture cards with a flat, washed-out image. 1.0 is unmodified.</p>
+                    <br>
+                    <div id="colorContrastSlider" class="ui labeled ticked slider"></div>
+                </div>
+
                 <div class="settings-field">
                     <label>Fullscreen</label>
                     <p class="field-description">Enter or exit browser fullscreen mode.</p>
@@ -600,7 +608,8 @@ const SETTINGS_TEMPLATE = {
     stackKeyToggle: 'ShiftRight',
     stackKeyLongPress: 1.0,
     videoScalingMode: 'fill',
-    colorSaturation: 1.0
+    colorSaturation: 1.0,
+    colorContrast: 1.0
 };
 
 const SETTINGS_KEY = 'dezkvm_settings';
@@ -642,6 +651,20 @@ function initalizeUIElements(){
         onChange: function(value) {
             if (typeof setColorSaturation === 'function') {
                 setColorSaturation(value);
+            }
+            setTimeout(saveSettingsToLocalStorage, 50);
+        }
+    });
+
+    // AI-assisted addition
+    $('#colorContrastSlider').slider({
+        min: 0.5,
+        max: 3,
+        start: 1,
+        step: 0.1,
+        onChange: function(value) {
+            if (typeof setContrast === 'function') {
+                setContrast(value);
             }
             setTimeout(saveSettingsToLocalStorage, 50);
         }
@@ -717,6 +740,7 @@ function getCurrentSettings() {
     settings.stackKeyLongPress = (typeof stackKeyLongPressMs !== 'undefined') ? (stackKeyLongPressMs / 1000) : SETTINGS_TEMPLATE.stackKeyLongPress;
     settings.videoScalingMode = (typeof videoScalingMode !== 'undefined') ? videoScalingMode : SETTINGS_TEMPLATE.videoScalingMode;
     settings.colorSaturation = (typeof colorSaturation !== 'undefined') ? colorSaturation : SETTINGS_TEMPLATE.colorSaturation;
+    settings.colorContrast = (typeof colorContrast !== 'undefined') ? colorContrast : SETTINGS_TEMPLATE.colorContrast;
 
     // Get selected baudrate
     const baudrateRadio = document.querySelector('input[name="baudrate"]:checked');
@@ -958,6 +982,14 @@ function applySettingsToUI(settings) {
             setColorSaturation(settings.colorSaturation);
         }
         $('#colorSaturationSlider').slider('set value', settings.colorSaturation);
+    }
+
+    // AI-assisted addition: apply contrast
+    if (settings.hasOwnProperty('colorContrast')) {
+        if (typeof setContrast === 'function') {
+            setContrast(settings.colorContrast);
+        }
+        $('#colorContrastSlider').slider('set value', settings.colorContrast);
     }
 
     console.log('Settings applied to UI');

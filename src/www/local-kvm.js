@@ -2469,23 +2469,39 @@ function setVideoScalingMode(mode) {
     });
 }
 
-// AI-assisted addition: global saturation "hack" for capture cards with washed-out colors
-// (see #11 discussion - cheap HDMI-to-USB capture chips can under-saturate some hues).
-// Applied as a CSS filter to both the raw <video> element and the image-sharpening overlay
-// canvas (#sharpenCanvas, see initSharpeningPipeline() below) so it takes effect regardless
-// of whether sharpening is enabled. This is a global boost, not per-hue color correction -
-// pushing it too high risks over-saturating hues that were already fine.
+// AI-assisted addition: global saturation/contrast "hack" for capture cards with washed-out
+// or flat colors (see #11 discussion - cheap HDMI-to-USB capture chips can under-saturate
+// some hues, or render a flat, low-contrast image). Applied as a combined CSS filter to both
+// the raw <video> element and the image-sharpening overlay canvas (#sharpenCanvas, see
+// initSharpeningPipeline() below) so it takes effect regardless of whether sharpening is
+// enabled. These are global adjustments, not per-hue/region correction - pushing them too
+// high risks over-saturating or over-contrasting parts of the image that were already fine.
 let colorSaturation = 1.0;
-function setColorSaturation(value) {
-    let sat = parseFloat(value);
-    if (isNaN(sat)) sat = 1.0;
-    sat = Math.max(0.5, Math.min(3, sat));
-    colorSaturation = sat;
-    const filterValue = sat === 1 ? 'none' : `saturate(${sat})`;
+let colorContrast = 1.0;
+
+function applyVideoFilters() {
+    const parts = [];
+    if (colorSaturation !== 1) parts.push(`saturate(${colorSaturation})`);
+    if (colorContrast !== 1) parts.push(`contrast(${colorContrast})`);
+    const filterValue = parts.length ? parts.join(' ') : 'none';
     const video = document.getElementById('video');
     const sharpenCanvas = document.getElementById('sharpenCanvas');
     if (video) video.style.filter = filterValue;
     if (sharpenCanvas) sharpenCanvas.style.filter = filterValue;
+}
+
+function setColorSaturation(value) {
+    let sat = parseFloat(value);
+    if (isNaN(sat)) sat = 1.0;
+    colorSaturation = Math.max(0.5, Math.min(3, sat));
+    applyVideoFilters();
+}
+
+function setContrast(value) {
+    let c = parseFloat(value);
+    if (isNaN(c)) c = 1.0;
+    colorContrast = Math.max(0.5, Math.min(3, c));
+    applyVideoFilters();
 }
 
 // Toggle audio enable/disable

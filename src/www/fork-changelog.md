@@ -19,7 +19,7 @@ This is a community fork of [tobychui/DezKVM-Go](https://github.com/tobychui/Dez
 ## Display settings
 
 - Added video scaling modes to Settings > Display: Fill (stretch to fit, previous default behavior), Fit (scale down to fit without upscaling), and 1:1 Native (exact source resolution, scrollable).
-- Added a color saturation slider to Settings > Display, for capture cards that render some colors pale/washed out.
+- Added color saturation and contrast sliders to Settings > Display, for capture cards that render a pale/washed-out or flat image.
 
 ## Keep Remote Awake (formerly "Mouse Jiggler")
 
