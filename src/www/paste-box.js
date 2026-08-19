@@ -251,7 +251,7 @@ async function sendPasteText() {
         return;
     }
 
-    const estimatedTimeMs = text.length * 15;
+    const estimatedTimeMs = text.length * 40;
     if (estimatedTimeMs > 10000) {
         const proceed = confirm(`Sending this text may take approximately ${(estimatedTimeMs / 1000).toFixed(1)} seconds. Do you want to proceed?`);
         if (!proceed) return;

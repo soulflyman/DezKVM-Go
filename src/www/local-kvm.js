@@ -344,9 +344,11 @@ class HIDController {
         await this.sendPacketAndWait(packet, 0x0F);
     }
 
-    // Sends a packet over serial and waits for a reply with a specific command code
-    async sendPacketAndWait(packet, replyCmd) {
-        const timeout = 300; // 300ms timeout
+    // Sends a packet over serial and waits for a reply with a specific command code.
+    // AI-assisted addition: timeout/warnOnTimeout are now overridable per call - see
+    // keyboardSendKeyCombinations() below, which found this wait was pure dead time for
+    // keyboard reports specifically.
+    async sendPacketAndWait(packet, replyCmd, timeout = 300, warnOnTimeout = true) {
         const succReplyByte = replyCmd | 0x80;
         const errorReplyByte = replyCmd | 0xC0;
         // Success example for cmd 0x04: 57 AB 00 84 01 00 87
@@ -406,8 +408,12 @@ class HIDController {
         
         // Timeout - clear buffer and resolve (fallback to old behavior)
         // AI-assisted diagnostic for #11: this used to fail completely silently. Keep the
-        // resolve-not-reject contract (callers rely on it), just make timeouts visible.
-        console.warn(`Serial command timed out waiting for reply (cmd 0x${replyCmd.toString(16)})`);
+        // resolve-not-reject contract (callers rely on it), just make timeouts visible -
+        // except for callers that already know they don't get (or care about) a reply,
+        // which would otherwise spam this on every single keystroke.
+        if (warnOnTimeout) {
+            console.warn(`Serial command timed out waiting for reply (cmd 0x${replyCmd.toString(16)})`);
+        }
         serialReadBuffer = [];
         return Promise.resolve({ success: false, timeout: true });
     }
@@ -645,7 +651,18 @@ class HIDController {
             packet[7 + i] = this.hidState.KeyboardButtons[i] || 0x00;
         }
         packet[13] = this.calcChecksum(packet.slice(0, 13));
-        await this.sendPacketAndWait(packet, 0x02);
+        // AI-assisted change: this used to wait up to the full 300ms default timeout for a
+        // reply on every single keystroke - unlike softReset(), nothing here ever reads the
+        // resolved {success, ...} value (it's fire-and-forget by design, same as mouse
+        // move), so that wait bought nothing but idle time. It was the real reason Paste to
+        // Remote stayed slow (roughly one command's worth of dead time per HID report - 2 to
+        // 4 of these per pasted character) even after removing the paste loop's own extra
+        // per-character delay and redundant modifier toggles. A short timeout is kept
+        // (rather than skipping the wait outright) so a reply that does arrive quickly is
+        // still drained before the next command clears the shared read buffer; disabling the
+        // timeout warning here avoids logging one on effectively every keystroke, live typing
+        // included, once the reply routinely doesn't win that shorter race.
+        await this.sendPacketAndWait(packet, 0x02, 25, false);
     }
 
     // Convert JavaScript keycode to HID keycode
