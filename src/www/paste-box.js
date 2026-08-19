@@ -143,13 +143,22 @@ function showPasteBox() {
     
     pasteBox.style.display = 'flex';
     pasteBoxActive = true;
-    
+
     // Use setTimeout to ensure display is updated before focus
     setTimeout(() => {
         textarea.focus();
     }, 0);
-    
+
     updatePasteBoxCharCounter();
+
+    // AI-assisted addition: sync the layout dropdown to the current remote layout every time
+    // the popup opens, rather than only once at page load - the underlying setting (shared
+    // with Settings > Keyboard & Mouse via setPasteKeyboardLayout()/localStorage) may have
+    // finished loading after this popup's own script ran.
+    if (typeof $ !== 'undefined' && $('#pasteLayoutDropdown').length) {
+        const current = (typeof pasteKeyboardLayout !== 'undefined') ? pasteKeyboardLayout : 'us';
+        $('#pasteLayoutDropdown').dropdown('set selected', current);
+    }
 }
 
 function closePasteBox() {
@@ -163,40 +172,46 @@ function clearPasteBox() {
     updatePasteBoxCharCounter();
 }
 
-// AI-assisted change: now takes a raw HID opcode plus optional Shift/AltGr, instead of a
-// US-only JS keycode - see PASTE_LAYOUTS above. Shift still goes through the existing
-// SendKeyboardPress(16) mechanism (unchanged, already proven working); AltGr uses the same
-// right-Alt modifier bit already used by live keyboard forwarding.
-async function sendKeyPress(opcode, shift = false, altgr = false) {
+// AI-assisted change: presses/releases only the opcode itself. Shift/AltGr are handled
+// separately by applyModifierState() below, which - like a human holding Shift while typing
+// several capital letters - only toggles a modifier when the required state actually
+// changes between characters, instead of re-pressing/releasing it for every single
+// character. This is what live keyboard forwarding already does implicitly (one real
+// keydown/keyup per physical Shift press, not per letter); sendPasteText() now mirrors that.
+async function sendKeyPress(opcode) {
     if (typeof controller === 'undefined' || !controller) return;
 
-    try {
+    await controller.SendKeyboardPressOpcode(opcode);
+    await controller.SendKeyboardReleaseOpcode(opcode);
+}
+
+// AI-assisted addition: tracks which modifiers sendPasteText() currently holds down on the
+// remote (module-level since only one paste can run at a time - the Send button is hidden
+// for the duration) and only sends a press/release when the desired state differs from what's
+// already held, instead of toggling Shift/AltGr around every character. Callers must call
+// applyModifierState(false, false) in a finally block once the paste loop ends (success,
+// cancel, or error) so a stuck modifier can never leak into subsequent live typing.
+let pasteShiftHeld = false;
+let pasteAltgrHeld = false;
+
+async function applyModifierState(shift, altgr) {
+    if (typeof controller === 'undefined' || !controller) return;
+
+    if (shift !== pasteShiftHeld) {
         if (shift) {
             await controller.SendKeyboardPress(16);
-        }
-        if (altgr) {
-            await controller.SetModifierKey(18, true); // AltGr = right Alt
-        }
-
-        await controller.SendKeyboardPressOpcode(opcode);
-        await controller.SendKeyboardReleaseOpcode(opcode);
-    } finally {
-        // AI-assisted fix: release whatever modifiers this call may have pressed, even if an
-        // earlier step threw. HIDController's press/release methods mutate local HID state
-        // synchronously before awaiting the write, so a failed send can still leave
-        // Shift/AltGr "held" in local state unless explicitly released - otherwise a
-        // mid-paste failure (the exact case sendPasteText's try/catch exists for) would
-        // leave every subsequent keystroke, including live typing, arriving with a stuck
-        // modifier. Release calls are safe to call even if the matching press never actually
-        // landed (no-op if not held); swallow their own failures so they can't mask the real
-        // error from the outer catch. Same pattern already used by the keep-awake
-        // doKeyTap() in local-kvm.js.
-        if (altgr) {
-            await controller.UnsetModifierKey(18, true).catch(() => {});
-        }
-        if (shift) {
+        } else {
             await controller.SendKeyboardRelease(16).catch(() => {});
         }
+        pasteShiftHeld = shift;
+    }
+    if (altgr !== pasteAltgrHeld) {
+        if (altgr) {
+            await controller.SetModifierKey(18, true); // AltGr = right Alt
+        } else {
+            await controller.UnsetModifierKey(18, true).catch(() => {});
+        }
+        pasteAltgrHeld = altgr;
     }
 }
 
@@ -236,7 +251,7 @@ async function sendPasteText() {
         return;
     }
 
-    const estimatedTimeMs = text.length * 30;
+    const estimatedTimeMs = text.length * 15;
     if (estimatedTimeMs > 10000) {
         const proceed = confirm(`Sending this text may take approximately ${(estimatedTimeMs / 1000).toFixed(1)} seconds. Do you want to proceed?`);
         if (!proceed) return;
@@ -280,7 +295,8 @@ async function sendPasteText() {
             }
 
             if (mapping) {
-                await sendKeyPress(mapping.opcode, !!mapping.shift, !!mapping.altgr);
+                await applyModifierState(!!mapping.shift, !!mapping.altgr);
+                await sendKeyPress(mapping.opcode);
                 sentCount++;
             } else {
                 skippedCount++;
@@ -288,13 +304,14 @@ async function sendPasteText() {
 
             const progress = ((i + 1) / text.length) * 100;
             $('#pasteProgressBar').progress('set percent', progress);
-
-            await new Promise(resolve => setTimeout(resolve, 30));
         }
     } catch (err) {
         console.error('Paste to Remote: sending failed', err);
         sendError = err;
     } finally {
+        // Guarantee no modifier is left held on the remote, regardless of how the loop
+        // ended (completion, cancellation, or an exception) - see applyModifierState().
+        await applyModifierState(false, false).catch(() => {});
         sendButton.style.display = 'inline-block';
         clearButton.style.display = 'inline-block';
         cancelButton.style.display = 'none';
@@ -327,6 +344,22 @@ $('#btnClearPaste').on('click', clearPasteBox);
 $('#btnSendPaste').on('click', sendPasteText);
 $('#btnCancelPaste').on('click', cancelPasteText);
 $('#pasteTextarea').on('input', updatePasteBoxCharCounter);
+
+// AI-assisted addition: Remote Layout dropdown, relocated here from Settings > Keyboard &
+// Mouse so it's reachable right where it's used. Still persisted the same way as before -
+// setPasteKeyboardLayout() (local-kvm.js) updates the shared global that sendPasteText()
+// reads, and saveSettingsToLocalStorage() (settings.html) writes it to the same
+// localStorage-backed settings object as every other setting.
+$('#pasteLayoutDropdown').dropdown({
+    onChange: function(value) {
+        if (typeof window.setPasteKeyboardLayout === 'function') {
+            window.setPasteKeyboardLayout(value);
+        }
+        if (typeof window.saveSettingsToLocalStorage === 'function') {
+            window.saveSettingsToLocalStorage();
+        }
+    }
+});
 
 // Show paste box button listener
 $('#showPasteBox').on('click', function(){

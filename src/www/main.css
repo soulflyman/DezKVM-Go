@@ -113,6 +113,34 @@ body.video-scroll {
     box-shadow: 0 4px 16px rgba(0,0,0,0.3);
 }
 
+.paste-box-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1em;
+    margin-bottom: 0.5em;
+}
+
+.paste-box-header h3 {
+    margin: 0;
+}
+
+.paste-layout-select {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    font-size: 0.9em;
+    color: #767676;
+    flex-shrink: 0;
+}
+
+.paste-layout-select select.ui.dropdown {
+    min-width: auto;
+    width: auto;
+    padding-top: 0.5em;
+    padding-bottom: 0.5em;
+}
+
 .paste-box textarea {
     width: 100%;
     min-height: 200px;
