@@ -1846,6 +1846,25 @@ async function startStream() {
             return;
         }
 
+        // Release the previous session before acquiring a new one. Most hosts (V4L2
+        // especially) only allow a single reader per capture device, so re-opening the same
+        // device (restart, replug, or switching back to it) is refused by the host while our
+        // own earlier handle is still open - which the candidate-busy check below would then
+        // misreport as an externally-busy device rather than our own stale handle.
+        if (window.currentStream) {
+            for (const track of window.currentStream.getTracks()) track.stop();
+            window.currentStream = null;
+        }
+        if (window.currentAudioStream) {
+            for (const track of window.currentAudioStream.getTracks()) track.stop();
+            window.currentAudioStream = null;
+        }
+        if (window.kvmAudioContext) {
+            window.kvmAudioContext.close().catch(() => {});
+            window.kvmAudioContext = null;
+            window.kvmGainNode = null;
+        }
+
         // Try each candidate device in tier order, and each supported mode per candidate.
         // If a candidate throws a "busy/blocked" error (most likely already opened
         // exclusively by another session - see #11's multi-device case), abandon it

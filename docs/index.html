@@ -8,11 +8,18 @@
         <meta name="author" content="dezukvm.aroz.org">
         <link rel="icon" type="image/png" href="favicon.png">
         <title>DezKVM-Go</title>
+        <!-- PWA manifest -->
+        <link rel="manifest" href="manifest.json">
+        <meta name="theme-color" content="#000000">
+        <link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+        <meta name="apple-mobile-web-app-capable" content="yes">
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+        <meta name="apple-mobile-web-app-title" content="DezKVM-Go">
         <!-- jQuery -->
         <script src="scripts/jquery-3.7.1.min.js" integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo=" crossorigin="anonymous"></script>
         <!-- Fomantic UI -->
-        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/fomantic-ui/2.9.4/semantic.min.css" integrity="sha512-ySrYzxj+EI1e9xj/kRYqeDL5l1wW0IWY8pzHNTIZ+vc1D3Z14UDNPbwup4yOUmlRemYjgUXsUZ/xvCQU2ThEAw==" crossorigin="anonymous" referrerpolicy="no-referrer" />
-        <script src="https://cdnjs.cloudflare.com/ajax/libs/fomantic-ui/2.9.4/semantic.min.js" integrity="sha512-Y/wIVu+S+XJsDL7I+nL50kAVFLMqSdvuLqF2vMoRqiMkmvcqFjEpEgeu6Rx8tpZXKp77J8OUpMKy0m3jLYhbbw==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+        <link rel="stylesheet" href="scripts/fomantic-ui/semantic.min.css">
+        <script src="scripts/fomantic-ui/semantic.min.js"></script>
         <!-- Custom Styles -->
         <link rel="stylesheet" href="main.css">
     </head>
@@ -45,6 +52,8 @@
     <div id="menu">
         <div style="margin-right: 10px;">
             <img src="img/font_logo.svg" width="120" style="margin-top:0px;">
+            <!-- AI-assisted addition: fork indicator, see fork-changelog.md -->
+            <span class="ui mini basic label" style="margin-left:6px; vertical-align:middle; font-size:0.7em;" title="Community fork with additional fixes/features - see Settings > About or fork-changelog.md">Fork</span>
         </div>
      
         <!-- Serial Ports -->
@@ -65,6 +74,8 @@
         <button id="btnOnscreenKeyboard" class="ui mini basic icon button" title="Toggle On-Screen Keyboard"><i class="keyboard outline icon"></i></button>
         <!-- Fullscreen -->
         <button id="fullscreenBtn" class="ui mini basic icon button" title="Fullscreen"><i class="expand icon"></i></button>
+        <!-- AI-assisted addition: Keyboard Capture (Keyboard Lock API - Windows key, Alt+Tab, etc.) -->
+        <button id="keyCaptureBtn" class="ui mini basic icon button" title="Capture Keyboard (Windows key, Alt+Tab, etc.) - requires fullscreen" onclick="toggleKeyCapture()"><i class="lock icon"></i></button>
         <!-- Remap CTRL to CMD and CMD to CTRL -->
         <button id="btnCtrlCmdSwap" class="ui mini grey button" title="Swap Ctrl and Cmd keys" onclick="toggleCtrlCmdSwap()">CTRL ↔ CMD</button>
 
@@ -76,7 +87,7 @@
         <!-- Hide menu button -->
         <button id="hideMenuBtn" class="ui mini icon button"><i class="chevron up icon"></i></button>
     </div>
-    <video id="video" autoplay playsinline style="width:100%;max-width:100%;"></video>
+    <video id="video" autoplay playsinline class="video-scale-fill"></video>
     <div id="touchscreen"></div>
 
     <!-- Stacked Keys Display -->
@@ -107,6 +118,9 @@
 
     <!-- Settings Overlay -->
     <div id="settings-overlay"></div>
+
+    <!-- Device Select Dialog (AI-assisted addition for #11: manual capture-device picker) -->
+    <div id="deviceSelectDialog"></div>
 
     <!-- KVM Connect Prompt -->
     <div id="kvmConnectPrompt">
@@ -208,6 +222,9 @@
         });
         $("#settings-overlay").load('settings.html', function() {
             console.log('Settings loaded');
+        });
+        $("#deviceSelectDialog").load('device-select.html', function() {
+            console.log('Device Select dialog loaded');
         });
         // Screenshot functionality
         document.getElementById('screenshotBtn').addEventListener('click', async function() {

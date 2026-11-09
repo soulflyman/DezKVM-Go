@@ -243,6 +243,59 @@
                     </table>
                 </div>
 
+                <!-- AI-assisted addition for #11 -->
+                <div class="settings-field">
+                    <label>Capture Device</label>
+                    <p class="field-description">Manually choose which video/audio device to use — useful for multiple DezKVM-Go units on one computer, or browsers that can't auto-detect the device.</p>
+                    <button class="ui basic button" onclick="if (typeof openDeviceSelectDialog === 'function') openDeviceSelectDialog();">
+                        <i class="video icon"></i> Select Capture Device
+                    </button>
+                </div>
+
+                <!-- AI-assisted addition -->
+                <div class="settings-field">
+                    <label>Video Scaling</label>
+                    <p class="field-description">Choose how the video feed is sized within the window.</p>
+                    <div class="ui form" style="margin-top: 8px;">
+                        <div class="grouped fields" style="margin: 0;">
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" name="videoScaling" value="fill" id="videoScalingFill" class="auto-save-setting" onchange="setVideoScalingMode('fill')" checked>
+                                    <label for="videoScalingFill">Fill window (stretch to fit, may scale up)</label>
+                                </div>
+                            </div>
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" name="videoScaling" value="fit" id="videoScalingFit" class="auto-save-setting" onchange="setVideoScalingMode('fit')">
+                                    <label for="videoScalingFit">Fit window (scale down only, no upscaling)</label>
+                                </div>
+                            </div>
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" name="videoScaling" value="native" id="videoScalingNative" class="auto-save-setting" onchange="setVideoScalingMode('native')">
+                                    <label for="videoScalingNative">1:1 (native resolution, scroll if larger than window)</label>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- AI-assisted addition -->
+                <div class="settings-field">
+                    <label>Color Saturation</label>
+                    <p class="field-description">Boost or reduce color saturation — useful for capture cards with washed-out colors (common on cheap HDMI-to-USB adapters). 1.0 is unmodified. This is a global adjustment, not per-color correction, so pushing it too high can over-saturate colors that were already fine.</p>
+                    <br>
+                    <div id="colorSaturationSlider" class="ui labeled ticked slider"></div>
+                </div>
+
+                <!-- AI-assisted addition -->
+                <div class="settings-field">
+                    <label>Contrast</label>
+                    <p class="field-description">Boost or reduce contrast — useful for capture cards with a flat, washed-out image. 1.0 is unmodified.</p>
+                    <br>
+                    <div id="colorContrastSlider" class="ui labeled ticked slider"></div>
+                </div>
+
                 <div class="settings-field">
                     <label>Fullscreen</label>
                     <p class="field-description">Enter or exit browser fullscreen mode.</p>
@@ -329,12 +382,38 @@
                 </div>  
 
 
+                <!-- AI-assisted addition: relabeled from "Mouse Jiggler" and given a
+                     selectable method, since jiggling the mouse does nothing on a headless
+                     remote showing only a text console. -->
                 <div class="settings-field">
-                    <label>Mouse Jiggler</label>
-                    <p class="field-description">Enable mouse jiggler after 30 seconds of inactivity.</p>
+                    <label>Keep Remote Awake</label>
+                    <p class="field-description">After 30 seconds of no local input, periodically nudge the remote machine so it doesn't sleep or lock. For headless/text-only sessions (e.g. a bare Linux shell), use one of the key-press methods instead of mouse jiggle, since mouse movement has no effect there. "Ctrl tap" resets screen-blanking/screensaver timers but not shell/SSH-level idle timeouts (a lone modifier never reaches the tty); "Arrow tap" resets both, at the small cost of being a real keypress.</p>
                     <div class="ui toggle checkbox" id="mouseJigglerCheckbox">
                         <input type="checkbox" id="chkSettingsMouseJiggler" class="auto-save-setting" onchange="toggleMouseJiggler()">
-                        <label>Enable Mouse jiggler</label>
+                        <label>Enable keep-awake</label>
+                    </div>
+                    <div class="ui form" style="margin-top: 10px;">
+                        <div class="grouped fields" style="margin: 0;">
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" name="keepAliveMethod" value="mouse" id="keepAliveMouse" class="auto-save-setting" onchange="onKeepAliveMethodChange()" checked>
+                                    <label for="keepAliveMouse">Mouse jiggle (nudge cursor left/right)</label>
+                                </div>
+                            </div>
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" name="keepAliveMethod" value="key" id="keepAliveKey" class="auto-save-setting" onchange="onKeepAliveMethodChange()">
+                                    <label for="keepAliveKey">Key press: Ctrl tap (harmless, but doesn't reset shell/SSH timeouts)</label>
+                                </div>
+                            </div>
+                            <!-- AI-assisted addition -->
+                            <div class="field">
+                                <div class="ui radio checkbox">
+                                    <input type="radio" name="keepAliveMethod" value="arrow" id="keepAliveArrow" class="auto-save-setting" onchange="onKeepAliveMethodChange()">
+                                    <label for="keepAliveArrow">Key press: Arrow tap (Right, then Left — also resets shell/SSH timeouts)</label>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -452,6 +531,15 @@
                     </p>
                 </div>
 
+                <!-- AI-assisted addition: fork disclosure, see fork-changelog.md -->
+                <div class="ui icon message" style="margin-bottom: 1.5em;">
+                    <i class="code branch icon"></i>
+                    <div class="content">
+                        <div class="header">Community Fork</div>
+                        <p>This build includes additional fixes and features not present in the upstream project, several implemented with AI assistance. See the <a href="fork-changelog.md" target="_blank" rel="noopener noreferrer">Fork Changelog</a> for details.</p>
+                    </div>
+                </div>
+
                 <b>Supported Hardware</b>
                 <div class="ui relaxed list">
                     <div class="item">
@@ -486,15 +574,20 @@ const SETTINGS_TEMPLATE = {
     invertScrollwheel: false,
     relativeMouseMode: false,
     mouseJiggler: false,
+    keepAliveMethod: 'mouse',
     ctrlCmdSwap: false,
     askOnPaste: false,
+    pasteKeyboardLayout: 'us',
     relativeMouseSensitivity: 1.0,
     baudrate: 115200,
     saveToLocalStorage: true,
     imageSharpening: false,
     stackKeysEnabled: true,
     stackKeyToggle: 'ShiftRight',
-    stackKeyLongPress: 1.0
+    stackKeyLongPress: 1.0,
+    videoScalingMode: 'fill',
+    colorSaturation: 1.0,
+    colorContrast: 1.0
 };
 
 const SETTINGS_KEY = 'dezkvm_settings';
@@ -522,6 +615,34 @@ function initalizeUIElements(){
         onChange: function(value) {
             if (typeof setExtraGain === 'function') {
                 setExtraGain(value);
+            }
+            setTimeout(saveSettingsToLocalStorage, 50);
+        }
+    });
+
+    // AI-assisted addition
+    $('#colorSaturationSlider').slider({
+        min: 0.5,
+        max: 3,
+        start: 1,
+        step: 0.1,
+        onChange: function(value) {
+            if (typeof setColorSaturation === 'function') {
+                setColorSaturation(value);
+            }
+            setTimeout(saveSettingsToLocalStorage, 50);
+        }
+    });
+
+    // AI-assisted addition
+    $('#colorContrastSlider').slider({
+        min: 0.5,
+        max: 3,
+        start: 1,
+        step: 0.1,
+        onChange: function(value) {
+            if (typeof setContrast === 'function') {
+                setContrast(value);
             }
             setTimeout(saveSettingsToLocalStorage, 50);
         }
@@ -560,6 +681,15 @@ function onStackKeyToggleChange() {
     }
 }
 
+// AI-assisted addition: Keep Remote Awake method radio change handler
+function onKeepAliveMethodChange() {
+    const radio = document.querySelector('input[name="keepAliveMethod"]:checked');
+    const method = radio ? radio.value : 'mouse';
+    if (typeof window.setKeepAliveMethod === 'function') {
+        window.setKeepAliveMethod(method);
+    }
+}
+
 // Get current settings from UI
 function getCurrentSettings() {
     const settings = {};
@@ -569,12 +699,17 @@ function getCurrentSettings() {
     settings.invertScrollwheel = document.getElementById('chkSettingsInvertScrollwheel')?.checked ?? SETTINGS_TEMPLATE.invertScrollwheel;
     settings.relativeMouseMode = document.getElementById('chkSettingsRelativeMouseMode')?.checked ?? SETTINGS_TEMPLATE.relativeMouseMode;
     settings.mouseJiggler = document.getElementById('chkSettingsMouseJiggler')?.checked ?? SETTINGS_TEMPLATE.mouseJiggler;
+    settings.keepAliveMethod = document.querySelector('input[name="keepAliveMethod"]:checked')?.value ?? SETTINGS_TEMPLATE.keepAliveMethod;
     settings.askOnPaste = document.getElementById('chkSettingsAskOnPaste')?.checked ?? SETTINGS_TEMPLATE.askOnPaste;
+    settings.pasteKeyboardLayout = (typeof pasteKeyboardLayout !== 'undefined') ? pasteKeyboardLayout : SETTINGS_TEMPLATE.pasteKeyboardLayout;
     settings.relativeMouseSensitivity = (typeof relativeMouseSensitivity !== 'undefined') ? relativeMouseSensitivity : SETTINGS_TEMPLATE.relativeMouseSensitivity;
     settings.imageSharpening = document.getElementById('chkSettingsImageSharpening')?.checked ?? SETTINGS_TEMPLATE.imageSharpening;
     settings.stackKeysEnabled = document.getElementById('chkSettingsStackKeysEnabled')?.checked ?? SETTINGS_TEMPLATE.stackKeysEnabled;
     settings.stackKeyToggle = (typeof stackKeyToggleCode !== 'undefined') ? stackKeyToggleCode : SETTINGS_TEMPLATE.stackKeyToggle;
     settings.stackKeyLongPress = (typeof stackKeyLongPressMs !== 'undefined') ? (stackKeyLongPressMs / 1000) : SETTINGS_TEMPLATE.stackKeyLongPress;
+    settings.videoScalingMode = (typeof videoScalingMode !== 'undefined') ? videoScalingMode : SETTINGS_TEMPLATE.videoScalingMode;
+    settings.colorSaturation = (typeof colorSaturation !== 'undefined') ? colorSaturation : SETTINGS_TEMPLATE.colorSaturation;
+    settings.colorContrast = (typeof colorContrast !== 'undefined') ? colorContrast : SETTINGS_TEMPLATE.colorContrast;
 
     // Get selected baudrate
     const baudrateRadio = document.querySelector('input[name="baudrate"]:checked');
@@ -701,7 +836,16 @@ function applySettingsToUI(settings) {
             window.setMouseJigglerEnabled(settings.mouseJiggler);
         }
     }
-    
+
+    // AI-assisted addition: apply keep-awake method
+    if (settings.hasOwnProperty('keepAliveMethod')) {
+        const methodRadio = document.querySelector(`input[name="keepAliveMethod"][value="${settings.keepAliveMethod}"]`);
+        if (methodRadio) methodRadio.checked = true;
+        if (typeof window.setKeepAliveMethod === 'function') {
+            window.setKeepAliveMethod(settings.keepAliveMethod);
+        }
+    }
+
     // Apply ask on paste
     const pasteChk = document.getElementById('chkSettingsAskOnPaste');
     if (pasteChk && settings.hasOwnProperty('askOnPaste')) {
@@ -711,7 +855,19 @@ function applySettingsToUI(settings) {
             askOnPasteEnabled = settings.askOnPaste;
         }
     }
-    
+
+    // AI-assisted addition: apply paste keyboard layout. The picker itself lives in the
+    // Paste to Remote popup (paste-box.html), not here - just apply it to the shared global
+    // and, if the popup happens to already be in the DOM, sync its dropdown too.
+    if (settings.hasOwnProperty('pasteKeyboardLayout')) {
+        if (typeof window.setPasteKeyboardLayout === 'function') {
+            window.setPasteKeyboardLayout(settings.pasteKeyboardLayout);
+        }
+        if (typeof $ !== 'undefined' && $('#pasteLayoutDropdown').length) {
+            $('#pasteLayoutDropdown').dropdown('set selected', settings.pasteKeyboardLayout);
+        }
+    }
+
     // Apply baudrate
     if (settings.hasOwnProperty('baudrate')) {
         const baudrateRadio = document.querySelector(`input[name="baudrate"][value="${settings.baudrate}"]`);
@@ -781,6 +937,31 @@ function applySettingsToUI(settings) {
             setStackKeyLongPress(settings.stackKeyLongPress);
         }
         $('#stackKeyLongPressSlider').slider('set value', settings.stackKeyLongPress);
+    }
+
+    // AI-assisted addition: apply video scaling mode
+    if (settings.hasOwnProperty('videoScalingMode')) {
+        const scalingRadio = document.querySelector(`input[name="videoScaling"][value="${settings.videoScalingMode}"]`);
+        if (scalingRadio) scalingRadio.checked = true;
+        if (typeof setVideoScalingMode === 'function') {
+            setVideoScalingMode(settings.videoScalingMode);
+        }
+    }
+
+    // AI-assisted addition: apply color saturation
+    if (settings.hasOwnProperty('colorSaturation')) {
+        if (typeof setColorSaturation === 'function') {
+            setColorSaturation(settings.colorSaturation);
+        }
+        $('#colorSaturationSlider').slider('set value', settings.colorSaturation);
+    }
+
+    // AI-assisted addition: apply contrast
+    if (settings.hasOwnProperty('colorContrast')) {
+        if (typeof setContrast === 'function') {
+            setContrast(settings.colorContrast);
+        }
+        $('#colorContrastSlider').slider('set value', settings.colorContrast);
     }
 
     console.log('Settings applied to UI');

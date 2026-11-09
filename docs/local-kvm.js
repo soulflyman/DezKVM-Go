@@ -10,6 +10,10 @@
     it under the terms of the GNU General Public License as published by
     the Free Software Foundation, either version 3 of the License, or
     (at your option) any later version.
+
+    Sections of this file marked "AI-assisted fix for #11" or "AI-assisted diagnostic for #11"
+    were written by an AI coding assistant (Claude) to address
+    https://github.com/tobychui/DezKVM-Go/issues/11.
 */
 
 /*
@@ -49,42 +53,105 @@ function updateSelectedPortDisplay(port) {
     }
 }
 
-// Request a new serial port
-async function requestSerialPort() {
-    try {
-        // Disconnect previous port if connected
-        if (serialPort) {
-            await disconnectSerialPort();
-        }
-        serialPort = await navigator.serial.requestPort();
-        const baudRate = getSelectedBaudrate();
-        await serialPort.open({ baudRate: baudRate });
-        serialReader = serialPort.readable.getReader();
-        serialWriter = serialPort.writable.getWriter();
-        updateSelectedPortDisplay(serialPort);
+// Open an already-selected (permission-granted) SerialPort and start the read loop +
+// CH9329 handshake. Shared by requestSerialPort() (after a fresh requestPort() prompt)
+// and tryAutoReconnectSerialPort() (after a silent getPorts()/'connect' resolution) so
+// both paths end up in the same connected state.
+async function openSerialPortConnection(port) {
+    const baudRate = getSelectedBaudrate();
+    // AI-assisted diagnostic for #11: log the baudrate actually used to open the port,
+    // in case settings.html's baudrate radios haven't finished their async load yet
+    // when the user pairs immediately on page load (getSelectedBaudrate() would then
+    // silently fall back to the 115200 default instead of the device's real baudrate).
+    console.log(`Opening serial port at baudrate ${baudRate}`);
+    await port.open({ baudRate: baudRate });
+    serialPort = port;
+    serialReader = serialPort.readable.getReader();
+    serialWriter = serialPort.writable.getWriter();
+    updateSelectedPortDisplay(serialPort);
 
-        // Change button to indicate connected state
-        document.getElementById('selectSerialPort').classList.add('negative');
-        document.querySelector('#selectSerialPort i').className = 'unlink icon';
+    // Change button to indicate connected state
+    document.getElementById('selectSerialPort').classList.add('negative');
+    document.querySelector('#selectSerialPort i').className = 'unlink icon';
 
-        // Start reading loop for incoming data
-        readSerialLoop();
+    // Start reading loop for incoming data
+    readSerialLoop();
 
-        // Send a softReset command to the CH9329 to ensure it's in a known state
-        setTimeout(async () => {
+    // Send a softReset command to the CH9329 to ensure it's in a known state
+    setTimeout(async () => {
             $.toast({
                 message: 'Initializing remote HID device...',
                 showProgress: 'bottom',
                 classProgress: 'green',
                 displayTime: 800,
             })
-            await controller.softReset();
+            // AI-assisted fix for #11: the softReset() result used to be discarded, so a
+            // pairing that "succeeded" (port opened fine) but never got a reply from the
+            // HID chip - the exact "paired but nothing forwards, no errors" symptom - was
+            // completely silent. Surface both the timeout and hard-failure cases.
+            //
+            // AI-assisted fix: a single retry (700ms-1000ms total budget) still wasn't
+            // enough for some setups - confirmed by real-world testing where the warning
+            // kept firing even though input worked perfectly once dismissed, meaning the
+            // link itself was fine and only the detection window was too tight. Widened to
+            // up to 3 total attempts with increasing gaps (worst case ~1.9s) before treating
+            // it as a genuine handshake failure. Each attempt re-sends a fresh softReset()
+            // command rather than just waiting longer for one reply, so this is robust
+            // whether the cause is the chip needing more time to wake up, or the first
+            // packet after port.open() getting dropped (a known quirk on some USB-serial
+            // bridges) - either way, a later attempt gets a clean shot at a reply.
+            const HANDSHAKE_MAX_ATTEMPTS = 3;
+            const HANDSHAKE_RETRY_DELAYS_MS = [300, 600]; // gap before attempt 2, before attempt 3
+            try {
+                let result = null;
+                for (let attempt = 0; attempt < HANDSHAKE_MAX_ATTEMPTS; attempt++) {
+                    if (attempt > 0) {
+                        console.warn(`Soft reset got no reply, retrying (attempt ${attempt + 1}/${HANDSHAKE_MAX_ATTEMPTS})...`);
+                        await new Promise(resolve => setTimeout(resolve, HANDSHAKE_RETRY_DELAYS_MS[attempt - 1]));
+                    }
+                    result = await controller.softReset();
+                    if (result && result.success !== false) break;
+                }
+                if (!result || result.success === false) {
+                    // AI-assisted fix: the handshake-timeout warning toast was disabled -
+                    // even after widening the retry budget it kept firing as a false
+                    // positive on some setups where input worked perfectly regardless, so
+                    // it was more irritating than useful. Left as a console warning only
+                    // (still visible in devtools) in case the timing needs revisiting later.
+                    console.warn('Soft reset got no reply from the HID device after retries (timeout) - input has been reported to work fine regardless, so no warning is shown to the user.');
+                }
+            } catch (resetErr) {
+                console.error('Soft reset failed:', resetErr);
+                $('body').toast({
+                    message: `<i class="red exclamation triangle icon"></i> Failed to initialize HID device: ${resetErr.message}`,
+                    class: 'error'
+                });
+            }
         }, 100);
+}
+
+// Request a new serial port (always shows the native port picker - use
+// tryAutoReconnectSerialPort() instead when a previously-granted port should be
+// reopened silently).
+async function requestSerialPort() {
+    try {
+        // Disconnect previous port if connected
+        if (serialPort) {
+            await disconnectSerialPort();
+        }
+        const port = await navigator.serial.requestPort();
+        await openSerialPortConnection(port);
     } catch (e) {
         updateSelectedPortDisplay(null);
+        // AI-assisted fix for #11: this used to swallow every error with the alert()
+        // commented out, so a genuine failure to open/connect (as opposed to the user
+        // cancelling the native port picker, which is NotFoundError) was invisible.
         if (e.name !== 'NotFoundError') {
-            // Only show alert if not user cancellation
-           // alert('Failed to open serial port');
+            console.error('Failed to open serial port:', e);
+            $('body').toast({
+                message: `<i class="red exclamation triangle icon"></i> Failed to connect to serial device: ${e.message || e.name}`,
+                class: 'error'
+            });
         }
     } finally {
         // Reset the flag regardless of success or failure
@@ -94,24 +161,50 @@ async function requestSerialPort() {
     }
 }
 
-// Disconnect serial port
-async function disconnectSerialPort() {
+// Silently reconnect to a previously permission-granted serial port, without showing the
+// native port picker. Used on page load (candidatePort omitted -> resolved via
+// getPorts()) and from the 'connect' event fired when a paired device is replugged
+// (candidatePort = event.target, so there's no ambiguity about which port it is).
+async function tryAutoReconnectSerialPort(candidatePort) {
+    if (serialPort || selectingSerialPort) return;
+    selectingSerialPort = true;
     try {
-        if (serialReader) {
-            await serialReader.cancel();
-            serialReader.releaseLock();
-            serialReader = null;
+        let port = candidatePort;
+        if (!port) {
+            const ports = await navigator.serial.getPorts();
+            if (ports.length !== 1) return; // none, or ambiguous - leave to manual selection
+            port = ports[0];
         }
-        if (serialWriter) {
-            serialWriter.releaseLock();
-            serialWriter = null;
-        }
-        if (serialPort) {
-            await serialPort.close();
-            serialPort = null;
-        }
-    } catch (e) {}
+        await openSerialPortConnection(port);
+    } catch (e) {
+        console.warn('Auto-reconnect to serial port failed:', e);
+        updateSelectedPortDisplay(null);
+    } finally {
+        selectingSerialPort = false;
+    }
+}
+
+// Disconnect serial port. Each resource is cleaned up in its own try/catch so that a
+// rejection from one step (expected right after a physical unplug, e.g. reader.cancel()
+// on a stream that's already errored) can't leave the others stale.
+async function disconnectSerialPort() {
+    if (serialReader) {
+        try { await serialReader.cancel(); } catch (e) {}
+        try { serialReader.releaseLock(); } catch (e) {}
+        serialReader = null;
+    }
+    if (serialWriter) {
+        try { serialWriter.releaseLock(); } catch (e) {}
+        serialWriter = null;
+    }
+    if (serialPort) {
+        try { await serialPort.close(); } catch (e) {}
+        serialPort = null;
+    }
     updateSelectedPortDisplay(null);
+    // Reset button back to disconnected state
+    document.getElementById('selectSerialPort').classList.remove('negative');
+    document.querySelector('#selectSerialPort i').className = 'keyboard icon';
 }
 
 // Read loop for incoming serial data, dispatches 'data' events on parent
@@ -141,12 +234,25 @@ async function sendSerial(data) {
 document.getElementById('selectSerialPort').addEventListener('click', function(){
     if (serialPort) {
         disconnectSerialPort();
-        document.getElementById('selectSerialPort').classList.remove('negative');
-        document.querySelector('#selectSerialPort i').className = 'keyboard icon';
     } else {
         requestSerialPort();
     }
 });
+
+// Silently reconnect to a previously-granted serial port on load, and mirror the
+// devicechange-driven video auto-reconnect (local-kvm.js ~2100) for physical
+// unplug/replug of the serial device.
+if ('serial' in navigator) {
+    navigator.serial.addEventListener('connect', (e) => {
+        tryAutoReconnectSerialPort(e.target);
+    });
+    navigator.serial.addEventListener('disconnect', (e) => {
+        if (e.target === serialPort) {
+            disconnectSerialPort();
+        }
+    });
+    tryAutoReconnectSerialPort();
+}
 
 /*
     CH9329 HID bytecode converter
@@ -182,7 +288,11 @@ function resizeTouchscreenToVideo() {
             offsetY = rect.top + (rect.height - displayHeight) / 2;
         }
 
-        touchscreen.style.position = 'absolute';
+        // AI-assisted fix: 'fixed' (not 'absolute') so this stays in the same
+        // viewport-relative coordinate space as getBoundingClientRect() above, which
+        // matters once the page can scroll (see the "1:1 native resolution" video scaling
+        // mode). No behavior change while the page can't scroll (the previous default).
+        touchscreen.style.position = 'fixed';
         touchscreen.style.left = offsetX + 'px';
         touchscreen.style.top = offsetY + 'px';
         touchscreen.style.width = displayWidth + 'px';
@@ -196,6 +306,12 @@ function resizeTouchscreenToVideo() {
 window.addEventListener('resize', resizeTouchscreenToVideo);
 window.addEventListener('DOMContentLoaded', resizeTouchscreenToVideo);
 setTimeout(resizeTouchscreenToVideo, 1000); // Also after 1s to ensure video is loaded
+
+// AI-assisted addition: the touch overlay uses 'fixed' positioning computed from
+// getBoundingClientRect() (viewport-relative). Fixed elements don't move with page scroll,
+// so once the "1:1 native resolution" scaling mode makes the page scrollable, the overlay
+// would go stale as soon as the user scrolls unless it's recomputed on every scroll event.
+window.addEventListener('scroll', resizeTouchscreenToVideo, { passive: true });
 
 class HIDController {
     constructor() {
@@ -228,9 +344,11 @@ class HIDController {
         await this.sendPacketAndWait(packet, 0x0F);
     }
 
-    // Sends a packet over serial and waits for a reply with a specific command code
-    async sendPacketAndWait(packet, replyCmd) {
-        const timeout = 300; // 300ms timeout
+    // Sends a packet over serial and waits for a reply with a specific command code.
+    // AI-assisted addition: timeout/warnOnTimeout are now overridable per call - see
+    // keyboardSendKeyCombinations() below, which found this wait was pure dead time for
+    // keyboard reports specifically.
+    async sendPacketAndWait(packet, replyCmd, timeout = 300, warnOnTimeout = true) {
         const succReplyByte = replyCmd | 0x80;
         const errorReplyByte = replyCmd | 0xC0;
         // Success example for cmd 0x04: 57 AB 00 84 01 00 87
@@ -289,6 +407,13 @@ class HIDController {
         }
         
         // Timeout - clear buffer and resolve (fallback to old behavior)
+        // AI-assisted diagnostic for #11: this used to fail completely silently. Keep the
+        // resolve-not-reject contract (callers rely on it), just make timeouts visible -
+        // except for callers that already know they don't get (or care about) a reply,
+        // which would otherwise spam this on every single keystroke.
+        if (warnOnTimeout) {
+            console.warn(`Serial command timed out waiting for reply (cmd 0x${replyCmd.toString(16)})`);
+        }
         serialReadBuffer = [];
         return Promise.resolve({ success: false, timeout: true });
     }
@@ -425,10 +550,11 @@ class HIDController {
         await this.keyboardSendKeyCombinations();
     }
 
-    // Send a keyboard press by JavaScript keycode
-    async SendKeyboardPress(keycode) {
-        const hid = this.javaScriptKeycodeToHIDOpcode(keycode);
-        if (hid === 0x00) throw new Error("Unsupported keycode: " + keycode);
+    // AI-assisted addition: shared HID-opcode press/release state management, extracted so
+    // both the legacy US-layout-only keycode path and the new layout-independent code-based
+    // path (see codeToHIDOpcode()/SendKeyboardPressByCode() below) reuse the exact same
+    // hidState.KeyboardButtons bookkeeping instead of duplicating it.
+    async _pressHidOpcode(hid, label) {
         // Already pressed?
         for (let i = 0; i < 6; i++) {
             if (this.hidState.KeyboardButtons[i] === hid) return;
@@ -441,13 +567,10 @@ class HIDController {
                 return;
             }
         }
-        throw new Error("No space left in keyboard state to press key: " + keycode);
+        throw new Error("No space left in keyboard state to press key: " + label);
     }
 
-    // Send a keyboard release by JavaScript keycode
-    async SendKeyboardRelease(keycode) {
-        const hid = this.javaScriptKeycodeToHIDOpcode(keycode);
-        if (hid === 0x00) throw new Error("Unsupported keycode: " + keycode);
+    async _releaseHidOpcode(hid) {
         for (let i = 0; i < 6; i++) {
             if (this.hidState.KeyboardButtons[i] === hid) {
                 this.hidState.KeyboardButtons[i] = 0x00;
@@ -456,6 +579,64 @@ class HIDController {
             }
         }
         // Not pressed, do nothing
+    }
+
+    // Send a keyboard press by legacy JavaScript keycode (US-layout-position based). Used
+    // by canned/synthetic key sequences (quick access buttons, paste-to-remote, on-screen
+    // keyboard) - NOT by live physical keydown forwarding, see SendKeyboardPressByCode().
+    async SendKeyboardPress(keycode) {
+        const hid = this.javaScriptKeycodeToHIDOpcode(keycode);
+        if (hid === 0x00) throw new Error("Unsupported keycode: " + keycode);
+        await this._pressHidOpcode(hid, keycode);
+    }
+
+    // Send a keyboard release by legacy JavaScript keycode - see SendKeyboardPress() above.
+    async SendKeyboardRelease(keycode) {
+        const hid = this.javaScriptKeycodeToHIDOpcode(keycode);
+        if (hid === 0x00) throw new Error("Unsupported keycode: " + keycode);
+        await this._releaseHidOpcode(hid);
+    }
+
+    // AI-assisted addition: press/release by KeyboardEvent.code - the standards-based,
+    // physical-position, layout-independent key identifier. This is what live physical
+    // keydown/keyup forwarding must use instead of the legacy keycode path above: keyCode's
+    // value for punctuation is unreliable across non-US layouts (e.g. German), and the
+    // legacy table only recognizes US-layout punctuation at all, so non-US keys either
+    // mapped to the wrong physical position or were silently dropped. `code` plus the
+    // standard USB HID Usage Table mapping in codeToHIDOpcode() below fixes this for any
+    // keyboard layout on either end, since physical position never depends on layout.
+    async SendKeyboardPressByCode(code) {
+        const hid = this.codeToHIDOpcode(code);
+        if (hid === 0x00) throw new Error("Unsupported code: " + code);
+        await this._pressHidOpcode(hid, code);
+    }
+
+    async SendKeyboardReleaseByCode(code) {
+        const hid = this.codeToHIDOpcode(code);
+        if (hid === 0x00) throw new Error("Unsupported code: " + code);
+        await this._releaseHidOpcode(hid);
+    }
+
+    // AI-assisted addition: press/release by raw USB HID opcode, for callers that already
+    // know exactly which physical key they want (e.g. a per-layout character table for
+    // paste-to-remote, see paste-box.js) without needing a fake KeyboardEvent.code string.
+    async SendKeyboardPressOpcode(hid) {
+        await this._pressHidOpcode(hid, '0x' + hid.toString(16));
+    }
+
+    async SendKeyboardReleaseOpcode(hid) {
+        await this._releaseHidOpcode(hid);
+    }
+
+    // AI-assisted addition: clears all held modifiers and keys, both locally and on the
+    // remote, in one report. Used to recover from "stuck" keys - e.g. a modifier whose
+    // keydown was forwarded but whose matching keyup never arrived because focus left
+    // the tab mid-press (an OS-level hotkey stealing focus, alt-tab, switching browser
+    // tabs, etc.). See the 'blur'/'visibilitychange' listeners below.
+    async ReleaseAllKeys() {
+        this.hidState.Modkey = 0x00;
+        this.hidState.KeyboardButtons = [0, 0, 0, 0, 0, 0];
+        await this.keyboardSendKeyCombinations();
     }
 
     // Send the current key combinations (modifiers + up to 6 keys)
@@ -470,7 +651,18 @@ class HIDController {
             packet[7 + i] = this.hidState.KeyboardButtons[i] || 0x00;
         }
         packet[13] = this.calcChecksum(packet.slice(0, 13));
-        await this.sendPacketAndWait(packet, 0x02);
+        // AI-assisted change: this used to wait up to the full 300ms default timeout for a
+        // reply on every single keystroke - unlike softReset(), nothing here ever reads the
+        // resolved {success, ...} value (it's fire-and-forget by design, same as mouse
+        // move), so that wait bought nothing but idle time. It was the real reason Paste to
+        // Remote stayed slow (roughly one command's worth of dead time per HID report - 2 to
+        // 4 of these per pasted character) even after removing the paste loop's own extra
+        // per-character delay and redundant modifier toggles. A short timeout is kept
+        // (rather than skipping the wait outright) so a reply that does arrive quickly is
+        // still drained before the next command clears the shared read buffer; disabling the
+        // timeout warning here avoids logging one on effectively every keystroke, live typing
+        // included, once the reply routinely doesn't win that shorter race.
+        await this.sendPacketAndWait(packet, 0x02, 25, false);
     }
 
     // Convert JavaScript keycode to HID keycode
@@ -542,6 +734,76 @@ class HIDController {
             default: return 0x00;
         }
     }
+
+    // AI-assisted addition: KeyboardEvent.code -> USB HID Keyboard/Keypad Usage Table
+    // (Page 0x07) opcode. Unlike javaScriptKeycodeToHIDOpcode() above, this mapping is
+    // exactly the same on every keyboard layout, because both `code` and the HID usage
+    // table are defined by physical key position, not by the character a layout produces.
+    codeToHIDOpcode(code) {
+        // Letters
+        if (/^Key[A-Z]$/.test(code)) return (code.charCodeAt(3) - 65) + 0x04;
+        // Digit1-Digit9, Digit0
+        if (/^Digit[0-9]$/.test(code)) {
+            const d = code.charCodeAt(5) - 48; // '0'-'9' -> 0-9
+            return d === 0 ? 0x27 : 0x1E + (d - 1);
+        }
+        // Numpad1-Numpad9, Numpad0
+        if (/^Numpad[0-9]$/.test(code)) {
+            const d = code.charCodeAt(6) - 48;
+            return d === 0 ? 0x62 : 0x59 + (d - 1);
+        }
+        // F1-F12
+        if (/^F([1-9]|1[0-2])$/.test(code)) {
+            return 0x3A + (parseInt(code.slice(1), 10) - 1);
+        }
+        switch (code) {
+            case 'Enter': return 0x28;
+            case 'Escape': return 0x29;
+            case 'Backspace': return 0x2A;
+            case 'Tab': return 0x2B;
+            case 'Space': return 0x2C;
+            case 'Minus': return 0x2D;          // '-' '_'
+            case 'Equal': return 0x2E;           // '=' '+'
+            case 'BracketLeft': return 0x2F;     // '[' '{'
+            case 'BracketRight': return 0x30;    // ']' '}'
+            case 'Backslash': return 0x31;       // '\' '|'
+            case 'Semicolon': return 0x33;       // ';' ':'
+            case 'Quote': return 0x34;           // ''' '"'
+            case 'Backquote': return 0x35;       // '`' '~'
+            case 'Comma': return 0x36;           // ',' '<'
+            case 'Period': return 0x37;          // '.' '>'
+            case 'Slash': return 0x38;           // '/' '?'
+            case 'CapsLock': return 0x39;
+            case 'PrintScreen': return 0x46;
+            case 'ScrollLock': return 0x47;
+            case 'Pause': return 0x48;
+            case 'Insert': return 0x49;
+            case 'Home': return 0x4A;
+            case 'PageUp': return 0x4B;
+            case 'Delete': return 0x4C;
+            case 'End': return 0x4D;
+            case 'PageDown': return 0x4E;
+            case 'ArrowRight': return 0x4F;
+            case 'ArrowLeft': return 0x50;
+            case 'ArrowDown': return 0x51;
+            case 'ArrowUp': return 0x52;
+            case 'NumLock': return 0x53;
+            case 'NumpadDivide': return 0x54;
+            case 'NumpadMultiply': return 0x55;
+            case 'NumpadSubtract': return 0x56;
+            case 'NumpadAdd': return 0x57;
+            case 'NumpadEnter': return 0x58;
+            case 'NumpadDecimal': return 0x63;
+            // ISO extra key between Left Shift and Z, present on German/European keyboards
+            // ('<' '>' '|') - has no ANSI/US equivalent, was silently dropped before.
+            case 'IntlBackslash': return 0x64;
+            case 'ContextMenu': return 0x65;     // Menu key
+            case 'NumpadEqual': return 0x67;
+            case 'IntlRo': return 0x87;          // JIS keyboards
+            case 'IntlYen': return 0x89;         // JIS keyboards
+            default: return 0x00;
+        }
+    }
 }
 
 // Instantiate HID controller
@@ -552,29 +814,56 @@ let isMouseDown = false;
 let lastX = 0;
 let lastY = 0;
 
+// AI-assisted fix for #11: serial write failures from mouse/keyboard handlers used to be
+// either unhandled promise rejections (mouse - no try/catch at all) or silently swallowed
+// (keyboard - catch with no distinction from "unsupported key"). Either way, a broken HID
+// link after a successful pairing produced zero visible symptoms, matching the "paired but
+// nothing forwards, no errors anywhere" report. Rate-limited so a dead link during
+// continuous mousemove doesn't spam toasts.
+let lastSerialErrorToastTime = 0;
+function reportSerialWriteError(err) {
+    console.error('Serial write failed:', err);
+    const now = Date.now();
+    if (now - lastSerialErrorToastTime > 4000) {
+        lastSerialErrorToastTime = now;
+        $('body').toast({
+            message: '<i class="red exclamation triangle icon"></i> Lost connection to HID device. Try reconnecting the serial port.',
+            class: 'error'
+        });
+    }
+}
+
 // Mouse down
 videoOverlayElement.addEventListener('mousedown', async (e) => {
     isMouseDown = true;
     lastX = e.clientX;
     lastY = e.clientY;
-    if (e.button === 0) {
-        await controller.MouseButtonPress(0x01); // Left
-    } else if (e.button === 2) {
-        await controller.MouseButtonPress(0x02); // Right
-    } else if (e.button === 1) {
-        await controller.MouseButtonPress(0x03); // Middle
+    try {
+        if (e.button === 0) {
+            await controller.MouseButtonPress(0x01); // Left
+        } else if (e.button === 2) {
+            await controller.MouseButtonPress(0x02); // Right
+        } else if (e.button === 1) {
+            await controller.MouseButtonPress(0x03); // Middle
+        }
+    } catch (err) {
+        reportSerialWriteError(err);
     }
 });
 
 // Mouse up
 videoOverlayElement.addEventListener('mouseup', async (e) => {
     isMouseDown = false;
-    if (e.button === 0) {
-        await controller.MouseButtonRelease(0x01); // Left
-    } else if (e.button === 2) {
-        await controller.MouseButtonRelease(0x02); // Right
-    } else if (e.button === 1) {
-        await controller.MouseButtonRelease(0x03); // Middle
+    try {
+        if (e.button === 0) {
+            await controller.MouseButtonRelease(0x01); // Left
+        } else if (e.button === 2) {
+            await controller.MouseButtonRelease(0x02); // Right
+        } else if (e.button === 1) {
+            await controller.MouseButtonRelease(0x03); // Middle
+        }
+    } catch (err) {
+        reportSerialWriteError(err);
     }
 });
 
@@ -752,6 +1041,7 @@ function addStackedKey(e) {
     }
     stackedKeys.push({
         keyCode: e.keyCode,
+        code: e.code, // AI-assisted addition: layout-independent, see sendStackedKeys()
         location: e.location,
         isModifier: isModifier,
         label: formatStackKeyLabel(e),
@@ -774,12 +1064,15 @@ async function sendStackedKeys(keys) {
             await controller.SetModifierKey(swapCtrlCmd(m.keyCode), m.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT);
         }
         for (const r of regular) {
-            await controller.SendKeyboardPress(r.keyCode);
+            // AI-assisted fix: use the layout-independent code (see codeToHIDOpcode()),
+            // same reasoning as the main keydown/keyup handler - keeps Stacked Keys working
+            // for non-US layouts instead of only the live-typing path being fixed.
+            await controller.SendKeyboardPressByCode(r.code);
         }
         // Brief hold so the host registers the combination
         await new Promise(res => setTimeout(res, 50));
         for (const r of regular) {
-            await controller.SendKeyboardRelease(r.keyCode);
+            await controller.SendKeyboardReleaseByCode(r.code);
         }
         for (const m of mods) {
             await controller.UnsetModifierKey(swapCtrlCmd(m.keyCode), m.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT);
@@ -799,8 +1092,9 @@ async function forwardToggleKeyTap(e) {
             await controller.SetModifierKey(swapCtrlCmd(e.keyCode), isRight);
             await controller.UnsetModifierKey(swapCtrlCmd(e.keyCode), isRight);
         } else {
-            await controller.SendKeyboardPress(e.keyCode);
-            await controller.SendKeyboardRelease(e.keyCode);
+            // AI-assisted fix: layout-independent, see codeToHIDOpcode().
+            await controller.SendKeyboardPressByCode(e.code);
+            await controller.SendKeyboardReleaseByCode(e.code);
         }
     } catch (err) {
         // Ignore unsupported keys
@@ -907,35 +1201,39 @@ videoOverlayElement.addEventListener('click', function () {
 
 // Mouse move – supports both absolute and relative modes
 videoOverlayElement.addEventListener('mousemove', async (e) => {
-    if (controller.Config.AbsoluteMode) {
-        // Absolute positioning
-        const rect = videoOverlayElement.getBoundingClientRect();
-        const x = e.clientX - rect.left;
-        const y = e.clientY - rect.top;
-        const width = rect.width;
-        const height = rect.height;
-        const offsetX = x / width;
-        const offsetY = y / height;
+    try {
+        if (controller.Config.AbsoluteMode) {
+            // Absolute positioning
+            const rect = videoOverlayElement.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const width = rect.width;
+            const height = rect.height;
+            const offsetX = x / width;
+            const offsetY = y / height;
 
-        const absX = Math.round(offsetX * 4095);
-        const absY = Math.round(offsetY * 4095);
-        controller.hidState.MousePosition.x = absX;
-        controller.hidState.MousePosition.y = absY;
-        await controller.MouseMoveAbsolute(absX & 0xFF, (absX >> 8) & 0xFF, absY & 0xFF, (absY >> 8) & 0xFF);
-    } else {
-        // Relative positioning – use movementX/Y for pointer-locked delta
-        let dx = Math.round(e.movementX * relativeMouseSensitivity);
-        let dy = Math.round(e.movementY * relativeMouseSensitivity);
+            const absX = Math.round(offsetX * 4095);
+            const absY = Math.round(offsetY * 4095);
+            controller.hidState.MousePosition.x = absX;
+            controller.hidState.MousePosition.y = absY;
+            await controller.MouseMoveAbsolute(absX & 0xFF, (absX >> 8) & 0xFF, absY & 0xFF, (absY >> 8) & 0xFF);
+        } else {
+            // Relative positioning – use movementX/Y for pointer-locked delta
+            let dx = Math.round(e.movementX * relativeMouseSensitivity);
+            let dy = Math.round(e.movementY * relativeMouseSensitivity);
 
-        // Clamp to signed-byte range (-127 to 127, skip 0x80)
-        dx = Math.max(-127, Math.min(127, dx));
-        dy = Math.max(-127, Math.min(127, dy));
+            // Clamp to signed-byte range (-127 to 127, skip 0x80)
+            dx = Math.max(-127, Math.min(127, dx));
+            dy = Math.max(-127, Math.min(127, dy));
 
-        // Convert to unsigned byte for the HID packet
-        if (dx < 0) dx = 256 + dx;
-        if (dy < 0) dy = 256 + dy;
+            // Convert to unsigned byte for the HID packet
+            if (dx < 0) dx = 256 + dx;
+            if (dy < 0) dy = 256 + dy;
 
-        await controller.MouseMoveRelative(dx, dy, 0);
+            await controller.MouseMoveRelative(dx, dy, 0);
+        }
+    } catch (err) {
+        reportSerialWriteError(err);
     }
 });
 
@@ -950,13 +1248,17 @@ let scrollSensitivity = 2; // Default scroll sensitivity
 videoOverlayElement.addEventListener('wheel', async (e) => {
     e.preventDefault();
     let tilt = e.deltaY > 0 ? scrollSensitivity : -scrollSensitivity;
-    
+
     // Check if scroll inversion is enabled
     if (invertScrollEnabled) {
         tilt = -tilt;
     }
-    
-    await controller.MouseScroll(tilt);
+
+    try {
+        await controller.MouseScroll(tilt);
+    } catch (err) {
+        reportSerialWriteError(err);
+    }
 });
 
 // Check if the event target is a text input element
@@ -986,12 +1288,36 @@ window.addEventListener('keydown', async (e) => {
         // Modifier keys
         if (e.key === 'Control' || e.key === 'Shift' || e.key === 'Alt' || e.key === 'Meta') {
             await controller.SetModifierKey(swapCtrlCmd(e.keyCode), e.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT);
+        } else if (e.key === 'AltGraph') {
+            // AI-assisted fix: AltGr fires e.key === 'AltGraph', not 'Alt', so it never
+            // matched the modifier check above and was silently dropped as an unsupported
+            // code (breaking e.g. AltGr+Q for '@' on German layouts). On Windows, AltGr also
+            // triggers a phantom Left-Ctrl keydown just before this event (a known browser/OS
+            // quirk) which *does* match the check above and gets forwarded - so we
+            // retroactively clear that phantom Ctrl bit here rather than trying to
+            // predict/suppress it on the earlier Control keydown (unset is idempotent -
+            // harmless no-op if no phantom Ctrl was actually sent). Hardcode keycode 18 (Alt)
+            // instead of e.keyCode/swapCtrlCmd, since e.keyCode for AltGraph is inconsistent
+            // across browsers (e.g. reported as 225 in Firefox), which would otherwise throw
+            // "Not a modifier key" and surface a bogus error toast.
+            await controller.UnsetModifierKey(17, false);
+            await controller.SetModifierKey(18, true);
         } else {
-            await controller.SendKeyboardPress(e.keyCode);
+            // AI-assisted fix: use e.code (physical-position, layout-independent) instead
+            // of the legacy e.keyCode, which only recognizes US-layout punctuation and
+            // silently dropped/misidentified non-US keys (e.g. German ß, ü, ö, ä, the ISO
+            // extra key). See codeToHIDOpcode() in the HIDController class above.
+            await controller.SendKeyboardPressByCode(e.code);
         }
-       
+
     } catch (err) {
-        // Ignore unsupported keys
+        // AI-assisted fix for #11: this used to swallow every error, conflating a genuinely
+        // unsupported key (expected, silent) with a real serial write failure (was
+        // invisible - part of the "paired but nothing forwards" symptom). Only stay silent
+        // for the known/expected case.
+        if (!(typeof err.message === 'string' && err.message.startsWith('Unsupported'))) {
+            reportSerialWriteError(err);
+        }
     }
 });
 
@@ -1010,13 +1336,51 @@ window.addEventListener('keyup', async (e) => {
     try {
         if (e.key === 'Control' || e.key === 'Shift' || e.key === 'Alt' || e.key === 'Meta') {
             await controller.UnsetModifierKey(swapCtrlCmd(e.keyCode), e.location === KeyboardEvent.DOM_KEY_LOCATION_RIGHT);
+        } else if (e.key === 'AltGraph') {
+            // AI-assisted fix: see the matching keydown handler above. No phantom-Ctrl
+            // handling needed here - its keyup (if any) hits the 'Control' branch above and
+            // clears a bit that's already unset, a harmless no-op.
+            await controller.UnsetModifierKey(18, true);
         } else {
-            await controller.SendKeyboardRelease(e.keyCode);
+            // AI-assisted fix: see the matching keydown handler above.
+            await controller.SendKeyboardReleaseByCode(e.code);
         }
         e.preventDefault();
     } catch (err) {
-        // Ignore unsupported keys
+        // AI-assisted fix for #11: see the matching keydown handler above.
+        if (!(typeof err.message === 'string' && err.message.startsWith('Unsupported'))) {
+            reportSerialWriteError(err);
+        }
     }
+});
+
+// AI-assisted addition: release all held keys when the tab loses focus, to fix keys
+// getting stuck "held" on the remote when a keydown is forwarded but its matching keyup
+// never reaches this page - e.g. an OS-level hotkey (such as a Quake-mode terminal bound
+// to Win+<key>) steals focus away from the browser mid-press, so the Windows key's keyup
+// never fires here and it stays stuck down remotely (which can then combine with the next
+// keypress after refocusing, e.g. Win+L locking the remote session). 'blur' covers the
+// focus leaving the browser window entirely; 'visibilitychange' additionally covers
+// switching to another browser tab, which doesn't blur the window itself.
+// Also releases the on-screen keyboard's own held-modifier/held-key UI state
+// (onscreen-keyboard.js), which tracks Shift/Ctrl/Alt and Hold Mode keys independently
+// of HIDController.hidState - otherwise its buttons could stay highlighted "held" after
+// the underlying HID state was cleared here.
+async function releaseAllInputOnFocusLoss() {
+    if (typeof releaseAllModifiers === 'function') releaseAllModifiers();
+    if (typeof releaseAllHeldKeys === 'function') releaseAllHeldKeys();
+    if (!serialPort) return;
+    try {
+        await controller.ReleaseAllKeys();
+    } catch (err) {
+        console.warn('Failed to release keys on focus loss:', err);
+    }
+}
+
+window.addEventListener('blur', releaseAllInputOnFocusLoss);
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) releaseAllInputOnFocusLoss();
 });
 
 // Baudrate change handler - reconnect with new baudrate
@@ -1111,18 +1475,35 @@ function cancelPasteText() {
 }
 
 /*
-    Mouse Jiggler
-    When enabled, after 30 seconds of no user activity the mouse will
-    jiggle left/right every 5 seconds to prevent the remote machine from
-    going to sleep.  Any user interaction stops the jiggle immediately
-    and restarts the inactivity timer.
+    Keep Remote Awake (formerly "Mouse Jiggler")
+    When enabled, after 30 seconds of no user activity the remote machine is nudged every
+    5 seconds to prevent it from sleeping/locking. Any user interaction stops the nudging
+    immediately and restarts the inactivity timer.
+
+    AI-assisted addition: three methods are available (see `keepAliveMethod`) -
+      - 'mouse' (default, original behavior): jiggle the mouse cursor left/right.
+      - 'key': tap Ctrl alone (press + release, no other key). A bare Ctrl tap is a no-op
+        in virtually any context - shells, text consoles, GUIs - so it's safe to use when
+        connected to a headless/text-only remote where mouse movement has no effect.
+        Caveat: a lone modifier key never generates a character on the tty, so while it
+        resets screen-blanking/screensaver idle timers, it does NOT reset a shell-level
+        timeout (e.g. bash's $TMOUT) or an SSH inactivity disconnect.
+      - 'arrow': tap Right Arrow then Left Arrow (real keypresses, not just a modifier).
+        This does generate tty input, so unlike 'key' it also resets shell/SSH-level idle
+        timeouts - moving the cursor right then immediately back left is a no-op in a shell
+        prompt (typed or empty), vim, less, etc. Slightly less universally inert than 'key'
+        since a handful of TUI apps rebind arrow keys to something stateful, but still safe
+        for the terminal/shell use case this feature targets.
 */
 (function () {
-    const IDLE_TIMEOUT_MS = 30000;   // 30 seconds of inactivity before jiggling
-    const JIGGLE_INTERVAL_MS = 5000; // jiggle every 5 seconds
-    const JIGGLE_AMOUNT = 10;         // pixels to move left / right
+    const IDLE_TIMEOUT_MS = 30000;   // 30 seconds of inactivity before nudging
+    const JIGGLE_INTERVAL_MS = 5000; // nudge every 5 seconds
+    const JIGGLE_AMOUNT = 10;         // pixels to move left / right (mouse method)
+    const KEEP_ALIVE_KEYCODE = 17;    // Ctrl (key method)
+    const KEEP_ALIVE_ARROW_KEYCODES = [39, 37]; // Right, then Left (arrow method)
 
     let jiggleEnabled = false;
+    let keepAliveMethod = 'mouse';    // 'mouse' | 'key' | 'arrow'
     let idleTimer = null;
     let jiggleTimer = null;
     let jiggleDirection = 1;          // 1 = right, -1 = left
@@ -1150,29 +1531,79 @@ function cancelPasteText() {
         if (!jiggleEnabled) return;
 
         idleTimer = setTimeout(() => {
-            // Start jiggling
+            // Start nudging
             jiggleDirection = 1;
-            doJiggle(); // immediate first jiggle
+            doJiggle(); // immediate first nudge
             jiggleTimer = setInterval(doJiggle, JIGGLE_INTERVAL_MS);
         }, IDLE_TIMEOUT_MS);
+    }
+
+    async function doMouseJiggle() {
+        // Move in the current direction
+        let dx = JIGGLE_AMOUNT * jiggleDirection;
+        if (dx < 0) dx = 256 + dx; // convert to unsigned byte
+        await controller.MouseMoveRelative(dx, 0, 0);
+
+        // Flip direction for next time so the cursor returns
+        jiggleDirection *= -1;
+    }
+
+    async function doKeyTap() {
+        // Tap Ctrl alone - deliberately not run through swapCtrlCmd(), since this is a
+        // synthetic keep-alive action, not a real user keystroke, and shouldn't be affected
+        // by the user's Ctrl<->Cmd swap preference.
+        //
+        // The release is in `finally` so it always runs even if the press's write fails
+        // partway through: HIDController.SetModifierKey()/UnsetModifierKey() both mutate
+        // `hidState.Modkey` synchronously *before* awaiting the serial write, so calling
+        // UnsetModifierKey() here still clears the local "Ctrl held" state even on a dead
+        // link - without this, a failed write would leave Ctrl logically stuck down and
+        // silently corrupt every keystroke the user sends afterward.
+        try {
+            await controller.SetModifierKey(KEEP_ALIVE_KEYCODE, false);
+            await new Promise(resolve => setTimeout(resolve, 50));
+        } finally {
+            await controller.UnsetModifierKey(KEEP_ALIVE_KEYCODE, false);
+        }
+    }
+
+    async function tapKey(keycode) {
+        // Press+release a single key, guaranteeing the release always runs (see doKeyTap()
+        // above for why: SendKeyboardPress()/SendKeyboardRelease() both mutate
+        // hidState.KeyboardButtons synchronously before awaiting the serial write, so this
+        // keeps local state consistent even if a write fails partway through).
+        try {
+            await controller.SendKeyboardPress(keycode);
+            await new Promise(resolve => setTimeout(resolve, 40));
+        } finally {
+            await controller.SendKeyboardRelease(keycode);
+        }
+    }
+
+    async function doArrowTap() {
+        // Right, then Left - a round trip that's a no-op wherever the cursor happens to be.
+        for (const keycode of KEEP_ALIVE_ARROW_KEYCODES) {
+            await tapKey(keycode);
+            await new Promise(resolve => setTimeout(resolve, 40));
+        }
     }
 
     async function doJiggle() {
         if (!serialPort || !serialPort.readable || !serialPort.writable) return;
         try {
-            // Move in the current direction
-            let dx = JIGGLE_AMOUNT * jiggleDirection;
-            if (dx < 0) dx = 256 + dx; // convert to unsigned byte
-            await controller.MouseMoveRelative(dx, 0, 0);
-
-            // Flip direction for next time so the cursor returns
-            jiggleDirection *= -1;
+            if (keepAliveMethod === 'key') {
+                await doKeyTap();
+            } else if (keepAliveMethod === 'arrow') {
+                await doArrowTap();
+            } else {
+                await doMouseJiggle();
+            }
         } catch (e) {
             // Ignore – serial port may have been closed
         }
     }
 
-    // ---- toggle (called from settings.html) ----
+    // ---- toggle / method select (called from settings.html) ----
     window.setMouseJigglerEnabled = function(enabled) {
         jiggleEnabled = enabled;
         if (jiggleEnabled) {
@@ -1181,6 +1612,10 @@ function cancelPasteText() {
             stopJiggle();
             if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
         }
+    };
+
+    window.setKeepAliveMethod = function(method) {
+        keepAliveMethod = (method === 'key' || method === 'arrow') ? method : 'mouse';
     };
 
     // ---- user-activity listeners (reset idle timer) ----
@@ -1212,12 +1647,37 @@ const MODE_LIST = [
     { width: 1920, height: 1080, frameRate: 25 },
 ];
 
+// AI-assisted addition: on Firefox (which never puts VID:PID in device labels), the manual
+// device-select dialog used to make the user pick a device that Firefox's own native
+// permission prompt already resolved a moment earlier. Remember that choice here (deviceId
+// with a label fallback, since we don't know ahead of time which one Firefox populates on a
+// stopped/discarded stream) so startStream()/openDeviceSelectDialog() can reuse it instead of
+// asking again. Page-session only (not persisted) - see startStream()'s use of this for why.
+let browserPickedVideoDevice = null;
+
+function resolveBrowserPickedVideoDeviceId(devices) {
+    if (!browserPickedVideoDevice) return null;
+    const byId = devices.find(d => d.kind === 'videoinput' && d.deviceId === browserPickedVideoDevice.deviceId);
+    if (byId) return byId.deviceId;
+    if (browserPickedVideoDevice.label) {
+        const byLabel = devices.find(d => d.kind === 'videoinput' && d.label === browserPickedVideoDevice.label);
+        if (byLabel) return byLabel.deviceId;
+    }
+    return null;
+}
+
 async function requestMediaDevicePermission() {
     // Request any media device to trigger the permission popup
     const stream = await window.navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true,
     });
+
+    const videoTrack = stream.getVideoTracks()[0];
+    if (videoTrack) {
+        const settings = videoTrack.getSettings();
+        browserPickedVideoDevice = { deviceId: settings.deviceId, label: videoTrack.label };
+    }
 
     // Stop all tracks so they can be requested again
     for (const track of stream.getTracks()) {
@@ -1230,108 +1690,284 @@ function isLinuxChromium() {
     return /Linux/.test(ua) && /Chrome\//.test(ua) && !/Android/.test(ua);
 }
 
-function findDevice(devices, type, vid, pid) {
-    // Spec doesn't define how to find a device with specified VID/PID
-    // Chrome appends (vid:pid) to the device label
-    const pattern = new RegExp(`\\(${vid}:${pid}\\)\\s*$`, 'i');
-    const found = devices.find(x => x.kind === type && pattern.test(x.label));
-    if (found) {
-        return { device: found, exact: true };
+// AI-assisted fix for #11: findDevice() used to try exact-match, then fall back to a
+// pidOnly heuristic, *within a single VID:PID pair* before the caller ever got to try the
+// next pair's exact match. Since both known DezKVM-Go pairs share PID '2109', the pidOnly
+// fallback on the first pair (Gen1) was winning before Gen2's exact match ever got a chance,
+// causing both false "could not confirm" warnings and Gen2 units being misidentified as Gen1.
+// matchDevicesForPair() below only reports what matched for ONE pair/tier; the tiering across
+// ALL pairs is now handled by findAllCandidates().
+function matchDevicesForPair(devices, type, vid, pid) {
+    const exactPattern = new RegExp(`\\(${vid}:${pid}\\)\\s*$`, 'i');
+    const pidPattern = new RegExp(pid, 'i');
+    return {
+        exact: devices.filter(x => x.kind === type && exactPattern.test(x.label)),
+        pidOnly: devices.filter(x => x.kind === type && pidPattern.test(x.label)),
+    };
+}
+
+// Returns an ordered list of { device, pair, tier } candidates. Tier 1 (exact) is exhausted
+// across ALL supportedVidPidPairs before tier 2 (pidOnly) is even attempted, and tier 2 is
+// exhausted across all pairs before tier 3 (Linux "any device") is attempted.
+function findAllCandidates(devices, type, supportedVidPidPairs) {
+    const exactCandidates = [];
+    const pidOnlyCandidates = [];
+    const seenExact = new Set();
+    const seenPidOnly = new Set();
+
+    for (const pair of supportedVidPidPairs) {
+        const { exact, pidOnly } = matchDevicesForPair(devices, type, pair.vid, pair.pid);
+        for (const device of exact) {
+            if (seenExact.has(device.deviceId)) continue;
+            seenExact.add(device.deviceId);
+            exactCandidates.push({ device, pair, tier: 'exact' });
+        }
+        for (const device of pidOnly) {
+            if (seenPidOnly.has(device.deviceId)) continue;
+            seenPidOnly.add(device.deviceId);
+            pidOnlyCandidates.push({ device, pair, tier: 'pidOnly' });
+        }
     }
 
-    // Some host drivers (e.g. RaspiOS/V4L2 on Argon ONE UP CM5, see #8) don't pass the
-    // USB vid:pid through to the browser at all, labeling the device as just "2109 (V4L2)"
-    // or "2109 Analog Stereo". Fall back to matching the PID alone in the label.
-    const pidOnly = devices.find(x => x.kind === type && new RegExp(pid, 'i').test(x.label));
-    if (pidOnly) {
-        return { device: pidOnly, exact: false };
-    }
+    if (exactCandidates.length > 0) return exactCandidates;
+    if (pidOnlyCandidates.length > 0) return pidOnlyCandidates;
 
-    // Temporary workaround for #1 - not sure why this check can't pass Ubuntu 26.04 Chrome
+    // Temporary workaround for #1 - not sure why the pidOnly check can't pass Ubuntu 26.04 Chrome
     if (isLinuxChromium()) {
         const anyDevice = devices.find(x => x.kind === type);
         if (anyDevice) {
-            return { device: anyDevice, exact: false };
+            return [{ device: anyDevice, pair: null, tier: 'linuxAny' }];
         }
     }
-    return null;
+    return [];
 }
 
-async function startStream() {
-    try {
-        // Only getUserMedia triggers the permission popup, enumerateDevices won't
-        await requestMediaDevicePermission();
+function isDeviceBusyOrBlockedError(e) {
+    // Device exists but can't be opened right now - most likely already claimed exclusively
+    // by another tab/session (e.g. a second DezKVM-Go unit's video device, see #11).
+    // Deliberately excludes NotAllowedError (permission denial) - that's not a busy device,
+    // and misclassifying it here would mean silently trying every candidate and reporting
+    // the wrong diagnosis ("check the device connection" instead of a permissions problem).
+    return e && ['NotReadableError', 'TrackStartError'].includes(e.name);
+}
 
-        const devices = await window.navigator.mediaDevices.enumerateDevices();
+let streamStarting = false;
+let lastWarnedDeviceId = null;
+
+async function startStream() {
+    if (streamStarting) return;
+    streamStarting = true;
+    try {
+        // Only call getUserMedia (which triggers the permission popup) if device labels
+        // aren't already populated - repeating it on every call is unnecessary churn that
+        // was contributing to the Windows+Chrome video flicker reported in #11.
+        let devices = await window.navigator.mediaDevices.enumerateDevices();
+        const hasLabels = devices.some(d => d.kind === 'videoinput' && d.label);
+        if (!hasLabels) {
+            await requestMediaDevicePermission();
+            devices = await window.navigator.mediaDevices.enumerateDevices();
+        }
+
         const supportedVidPidPairs = [
             { vid: '534d', pid: '2109' , product: "DezKVM-Go Original"}, // MS2109, original DezKVM-Go
             { vid: '345f', pid: '2109' , product: "DezKVM-Go Gen2"}, // DezKVM-Go gen2
         ]
-        let videoDevice = null;
-        let audioDevice = null;
-        let fuzzyMatch = false;
-        for (const { vid, pid, product } of supportedVidPidPairs) {
-            const videoMatch = findDevice(devices, 'videoinput', vid, pid);
-            const audioMatch = findDevice(devices, 'audioinput', vid, pid);
-            if (videoMatch && audioMatch) {
-                videoDevice = videoMatch.device;
-                audioDevice = audioMatch.device;
-                fuzzyMatch = !videoMatch.exact || !audioMatch.exact;
-                console.log(`Found video device with VID:PID ${vid}:${pid}`);
-                productId = product;
-                break;
+
+        let videoCandidates = findAllCandidates(devices, 'videoinput', supportedVidPidPairs);
+
+        // A manually-picked device (see device-select.js) always takes priority, but is still
+        // tried through the same acquisition/retry loop below rather than bypassing it.
+        let manualSelection = null;
+        if (typeof resolveManualDeviceSelection === 'function') {
+            manualSelection = resolveManualDeviceSelection(devices);
+        }
+        if (manualSelection && manualSelection.videoDevice) {
+            videoCandidates = videoCandidates.filter(c => c.device.deviceId !== manualSelection.videoDevice.deviceId);
+            videoCandidates.unshift({ device: manualSelection.videoDevice, pair: null, tier: 'manual' });
+        } else {
+            // AI-assisted fix: if more than one device exactly matches a known VID:PID,
+            // ask the user instead of silently auto-trying them in order (previously this
+            // just iterated candidates and used whichever succeeded first, which is
+            // non-deterministic across runs and contradicts the intended "ambiguous match
+            // means ask" rule). Only applies when there's no manual override already
+            // resolving the ambiguity for a returning user.
+            const exactMatchCount = videoCandidates.filter(c => c.tier === 'exact').length;
+            if (exactMatchCount > 1) {
+                console.warn(`${exactMatchCount} devices exactly match a known DezKVM-Go VID:PID; asking the user to choose.`);
+                $('body').toast({
+                    message: '<i class="yellow warning sign icon"></i> Multiple matching capture devices found — please choose one.'
+                });
+                if (typeof openDeviceSelectDialog === 'function') openDeviceSelectDialog();
+                return;
             }
         }
 
-        if (!videoDevice) {
+        if (videoCandidates.length === 0) {
+            const anyVideoDevices = devices.filter(d => d.kind === 'videoinput');
+
+            // AI-assisted addition: VID:PID auto-detection can't identify anything on Firefox
+            // (see resolveBrowserPickedVideoDeviceId() above). If there's exactly one video
+            // device on the whole system, there's nothing ambiguous to ask about - reuse the
+            // device Firefox's own native permission prompt already resolved, instead of
+            // making the user pick it again in the manual dialog. Deliberately restricted to
+            // the single-device case: with more than one camera (e.g. a laptop webcam plus the
+            // capture card), silently trusting the browser's default pick could stream the
+            // wrong device with no preview shown - that ambiguous case still falls through to
+            // openDeviceSelectDialog() below, which now pre-selects this same device (see
+            // device-select.js) rather than defaulting to the first one in the list.
+            if (anyVideoDevices.length === 1) {
+                const pickedId = resolveBrowserPickedVideoDeviceId(devices);
+                if (pickedId) {
+                    videoCandidates = [{ device: anyVideoDevices[0], pair: null, tier: 'browserPicked' }];
+                }
+            }
+        }
+
+        if (videoCandidates.length === 0) {
             console.error('MS2109 video device not found');
             $('body').toast({
                 message: '<i class="red exclamation triangle icon"></i> MS2109 video capture device not found. Please connect the device and try again.'
             });
 
             // Print all connected video devices for debugging
+            const anyVideoDevices = devices.filter(d => d.kind === 'videoinput');
             console.log('Connected video devices:');
-            devices.filter(d => d.kind === 'videoinput').forEach(d => console.log(`- ${d.label} (id: ${d.deviceId})`));
+            anyVideoDevices.forEach(d => console.log(`- ${d.label} (id: ${d.deviceId})`));
+
+            // See #11: on browsers/hosts where auto-detection can't find the device at all
+            // (e.g. Firefox never exposes VID/PID), offer manual selection as a fallback -
+            // but only if there's actually something to pick from. Auto-opening an empty
+            // dialog when nothing is plugged in yet would also block the devicechange
+            // handler (it skips restarting the stream while the dialog is open) from ever
+            // picking up the device once it's connected.
+            if (anyVideoDevices.length > 0 && typeof openDeviceSelectDialog === 'function') {
+                openDeviceSelectDialog();
+            }
             return;
+        }
+
+        // Release the previous session before acquiring a new one. Most hosts (V4L2
+        // especially) only allow a single reader per capture device, so re-opening the same
+        // device (restart, replug, or switching back to it) is refused by the host while our
+        // own earlier handle is still open - which the candidate-busy check below would then
+        // misreport as an externally-busy device rather than our own stale handle.
+        if (window.currentStream) {
+            for (const track of window.currentStream.getTracks()) track.stop();
+            window.currentStream = null;
+        }
+        if (window.currentAudioStream) {
+            for (const track of window.currentAudioStream.getTracks()) track.stop();
+            window.currentAudioStream = null;
+        }
+        if (window.kvmAudioContext) {
+            window.kvmAudioContext.close().catch(() => {});
+            window.kvmAudioContext = null;
+            window.kvmGainNode = null;
+        }
+
+        // Try each candidate device in tier order, and each supported mode per candidate.
+        // If a candidate throws a "busy/blocked" error (most likely already opened
+        // exclusively by another session - see #11's multi-device case), abandon it
+        // immediately rather than burning through every mode against a dead device, and
+        // move on to the next candidate (e.g. a second physical DezKVM-Go unit).
+        let videoStream = null;
+        let chosenCandidate = null;
+        let lastVideoError = null;
+        for (const candidate of videoCandidates) {
+            let candidateBusy = false;
+            for (const mode of MODE_LIST) {
+                try {
+                    videoStream = await window.navigator.mediaDevices.getUserMedia({
+                        video: {
+                            deviceId: { exact: candidate.device.deviceId },
+                            width: { exact: mode.width },
+                            height: { exact: mode.height },
+                            frameRate: { exact: mode.frameRate },
+                        },
+                    });
+                    console.log(`Video stream started: ${mode.width}x${mode.height} @ ${mode.frameRate}fps (device: ${candidate.device.label || candidate.device.deviceId})`);
+                    chosenCandidate = candidate;
+                    break;
+                } catch (e) {
+                    lastVideoError = e;
+                    console.log(`Failed to start video stream with mode ${mode.width}x${mode.height}@${mode.frameRate}fps:`, e);
+                    if (isDeviceBusyOrBlockedError(e)) {
+                        console.warn(`Device "${candidate.device.label || candidate.device.deviceId}" appears to be in use elsewhere; trying next candidate if available.`);
+                        candidateBusy = true;
+                        break; // abandon this candidate, try the next one
+                    }
+                    // Otherwise keep trying the next mode for the same candidate
+                }
+            }
+
+            // AI-assisted fix: if every exact-resolution attempt above failed for a reason
+            // OTHER than the device being busy (e.g. OverconstrainedError - the real camera's
+            // supported modes don't precisely match MODE_LIST's exact 30/25fps values), try
+            // once more with no resolution/framerate constraints at all before giving up on
+            // this candidate. Without this, a correctly VID:PID-identified device could still
+            // fail to connect intermittently depending on exactly what modes it reports.
+            if (!videoStream && !candidateBusy) {
+                try {
+                    videoStream = await window.navigator.mediaDevices.getUserMedia({
+                        video: { deviceId: { exact: candidate.device.deviceId } },
+                    });
+                    console.log(`Video stream started with unconstrained resolution fallback (device: ${candidate.device.label || candidate.device.deviceId})`);
+                    chosenCandidate = candidate;
+                } catch (e) {
+                    lastVideoError = e;
+                    console.log(`Unconstrained fallback also failed for device "${candidate.device.label || candidate.device.deviceId}":`, e);
+                }
+            }
+
+            if (videoStream) break;
+        }
+
+        if (!videoStream || !chosenCandidate) {
+            // AI-assisted fix: this used to be a dead-end alert() with no recourse - a
+            // device correctly identified by VID:PID that still failed to connect (e.g. a
+            // transient negotiation failure) left the user stuck without a reload. Now
+            // falls back to the same manual device-select dialog used elsewhere.
+            console.error('Failed to start video stream with all candidates/modes', lastVideoError);
+            $('body').toast({
+                message: `<i class="red exclamation triangle icon"></i> Found a matching capture device but couldn't connect to it${lastVideoError && lastVideoError.name ? ` (${lastVideoError.name})` : ''}. Try again, or pick the device manually.`
+            });
+            if (typeof openDeviceSelectDialog === 'function') openDeviceSelectDialog();
+            return;
+        }
+
+        productId = chosenCandidate.pair ? chosenCandidate.pair.product : "Generic";
+
+        // Confirmation warning is keyed on the VIDEO candidate's match tier only. Audio
+        // labels on Windows rarely carry (vid:pid) even for an exact video match, so
+        // factoring audio tier into this check (as the old code did) produced false
+        // warnings on exact video matches - see #11.
+        const isFuzzy = chosenCandidate.tier !== 'exact' && chosenCandidate.tier !== 'manual' && chosenCandidate.tier !== 'browserPicked';
+        if (isFuzzy && lastWarnedDeviceId !== chosenCandidate.device.deviceId) {
+            lastWarnedDeviceId = chosenCandidate.device.deviceId;
+            console.warn(`Video device VID:PID could not be confirmed from the device label (label was "${chosenCandidate.device.label}"). Matched by fallback heuristic - this may not be the correct capture device.`);
+            $('body').toast({
+                message: '<i class="yellow warning sign icon"></i> Capture device VID:PID could not be confirmed. If this is the wrong device, please disconnect other v4l2 devices and reload the page, or pick it manually from Settings.'
+            });
+        } else if (!isFuzzy) {
+            lastWarnedDeviceId = null;
+        }
+
+        // Resolve audio: prefer a manually-picked audio device, then a device sharing the
+        // chosen video device's groupId (same physical capture card), then fall back to
+        // tiered VID:PID matching. Never let a missing/non-exact audio match block video.
+        let audioDevice = null;
+        if (manualSelection && manualSelection.audioDevice) {
+            audioDevice = manualSelection.audioDevice;
+        } else {
+            audioDevice = devices.find(d => d.kind === 'audioinput' && d.groupId && d.groupId === chosenCandidate.device.groupId) || null;
+            if (!audioDevice) {
+                const audioCandidates = findAllCandidates(devices, 'audioinput', supportedVidPidPairs);
+                if (audioCandidates.length > 0) audioDevice = audioCandidates[0].device;
+            }
         }
 
         if (!audioDevice) {
             console.warn('MS2109 audio device not found');
-        }
-
-        if (fuzzyMatch) {
-            // See #1: some host drivers (RaspiOS/V4L2) don't expose the vid:pid in the
-            // device label, so the device was matched by PID substring / heuristic only.
-            console.warn(`Video/audio device VID:PID could not be confirmed from the device label (label was "${videoDevice.label}"). Matched by fallback heuristic - this may not be the correct capture device.`);
-            $('body').toast({
-                message: '<i class="yellow warning sign icon"></i> Capture device VID:PID could not be confirmed. If this is the wrong device, please disconnect other v4l2 devices and reload the page.'
-            });
-        }
-
-        // Try different video modes
-        let videoStream = null;
-        for (const mode of MODE_LIST) {
-            try {
-                videoStream = await window.navigator.mediaDevices.getUserMedia({
-                    video: {
-                        deviceId: { exact: videoDevice.deviceId },
-                        width: { exact: mode.width },
-                        height: { exact: mode.height },
-                        frameRate: { exact: mode.frameRate },
-                    },
-                });
-                console.log(`Video stream started: ${mode.width}x${mode.height} @ ${mode.frameRate}fps`);
-                break;
-            } catch (e) {
-                console.log(`Failed to start video stream with mode ${mode.width}x${mode.height}@${mode.frameRate}fps:`, e);
-                // Continue to next mode
-            }
-        }
-
-        if (!videoStream) {
-            console.error('Failed to start video stream with all modes');
-            alert('Failed to start video stream. Please check the device connection.');
-            return;
         }
 
         document.getElementById('video').srcObject = videoStream;
@@ -1414,6 +2050,8 @@ async function startStream() {
     } catch (e) {
         console.error('Unable to access media devices:', e);
         alert('Unable to access media devices: ' + e.message);
+    } finally {
+        streamStarting = false;
     }
 }
 
@@ -1455,8 +2093,110 @@ document.getElementById('fullscreenBtn').addEventListener('click', () => {
             document.body.msRequestFullscreen();
         }
         document.querySelector('#fullscreenBtn i').className = 'compress icon';
-        
+
     }
+});
+
+/*
+    AI-assisted addition: Keyboard Capture mode, like a VM console (VMware/VirtualBox) or
+    VNC/RDP web client (noVNC, Guacamole) - uses the Keyboard Lock API so OS-reserved keys
+    (Windows key, Alt+Tab, etc.) reach this page instead of the local OS/window manager
+    while capturing, so they get forwarded to the remote like any other key.
+
+    Notes/limits:
+    - Chromium-only (Chrome/Edge/Opera) - same boundary as navigator.serial, which this app
+      already requires. Firefox/Safari don't implement navigator.keyboard.lock at all.
+    - Requires the page to actually be in fullscreen; the lock is (re)applied from the
+      fullscreenchange listener below once fullscreen is confirmed active, and dropped the
+      moment fullscreen ends, however that happens (this button, F11, or Chromium's built-in
+      hold-Esc-to-exit safety gesture).
+    - Ctrl+Alt+Del can NEVER be intercepted by any browser API on any OS - it's a
+      hardware-level Secure Attention Sequence. That's not a gap here: quick-access.js
+      already has a dedicated "ctrl-alt-del" button that sends the HID sequence straight to
+      the remote, which is the correct way every KVM/VNC tool handles this.
+*/
+let keyCaptureEnabled = false;
+
+// Returns a Promise so callers can await fullscreen actually being engaged before calling
+// navigator.keyboard.lock() - Chromium's user-activation grant for lock() only reliably
+// carries through when it's awaited in the same async chain as the click that started it,
+// not from a separate later 'fullscreenchange' event handler.
+function requestFullscreenCompat() {
+    if (document.body.requestFullscreen) return document.body.requestFullscreen();
+    else if (document.body.webkitRequestFullscreen) return document.body.webkitRequestFullscreen();
+    else if (document.body.mozRequestFullScreen) return document.body.mozRequestFullScreen();
+    else if (document.body.msRequestFullscreen) return document.body.msRequestFullscreen();
+    return Promise.resolve();
+}
+
+function isDocumentFullscreen() {
+    return !!(document.fullscreenElement || document.webkitFullscreenElement ||
+              document.mozFullScreenElement || document.msFullscreenElement);
+}
+
+// Icon-swap (matching #fullscreenBtn/#selectSerialPort's existing convention) rather than a
+// color class - #keyCaptureBtn is a plain "basic icon button" with no color class, so
+// Fomantic's .negative styling wouldn't reliably show, and a capture toggle with no visible
+// state is worse than no toggle at all.
+function updateKeyCaptureButton() {
+    const icon = document.querySelector('#keyCaptureBtn i');
+    const btn = document.getElementById('keyCaptureBtn');
+    if (icon) icon.className = keyCaptureEnabled ? 'unlock alternate icon' : 'lock icon';
+    if (btn) btn.title = keyCaptureEnabled
+        ? 'Keyboard capture active (Windows key, Alt+Tab reach the remote) - click to release, or hold Esc to exit fullscreen'
+        : 'Capture Keyboard (Windows key, Alt+Tab, etc.) - requires fullscreen';
+}
+
+async function setKeyCaptureEnabled(enabled) {
+    if (enabled) {
+        if (!navigator.keyboard || typeof navigator.keyboard.lock !== 'function') {
+            $('body').toast({
+                message: '<i class="yellow warning sign icon"></i> Full keyboard capture (Windows key, Alt+Tab, etc.) requires a Chromium-based browser (Chrome/Edge). Use the Quick Access panel\'s shortcut buttons instead.',
+                class: 'warning'
+            });
+            return;
+        }
+        try {
+            if (!isDocumentFullscreen()) {
+                await requestFullscreenCompat();
+            }
+            await navigator.keyboard.lock();
+            keyCaptureEnabled = true;
+        } catch (e) {
+            console.error('Keyboard lock failed:', e);
+            $('body').toast({ message: `<i class="red exclamation triangle icon"></i> Failed to capture keyboard: ${e.message}`, class: 'error' });
+            keyCaptureEnabled = false;
+        }
+        updateKeyCaptureButton();
+    } else {
+        keyCaptureEnabled = false;
+        updateKeyCaptureButton();
+        if (navigator.keyboard && typeof navigator.keyboard.unlock === 'function') {
+            navigator.keyboard.unlock();
+        }
+    }
+}
+
+function toggleKeyCapture() {
+    setKeyCaptureEnabled(!keyCaptureEnabled);
+}
+
+// Global fullscreen-exit cleanup only (covers every exit trigger - this button, F11, or
+// Chromium's hold-Esc-to-exit gesture): capture can't stay active once fullscreen ends, so
+// unlock and reset state regardless of how fullscreen was left. The *entering* direction is
+// handled directly in setKeyCaptureEnabled() above, in the same user-gesture chain as the
+// click that requested it - see the comment on requestFullscreenCompat() for why.
+function handleFullscreenChangeForKeyCapture() {
+    if (!isDocumentFullscreen() && keyCaptureEnabled) {
+        if (navigator.keyboard && typeof navigator.keyboard.unlock === 'function') {
+            navigator.keyboard.unlock();
+        }
+        keyCaptureEnabled = false;
+        updateKeyCaptureButton();
+    }
+}
+['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange', 'MSFullscreenChange'].forEach(evt => {
+    document.addEventListener(evt, handleFullscreenChangeForKeyCapture);
 });
 
 // KVM Connect Prompt logic
@@ -1502,9 +2242,27 @@ document.getElementById('kvmConnectBtn').addEventListener('click', () => {
     }
 })();
 
+// AI-assisted fix for #11: Chrome on Windows fires 'devicechange' spuriously and
+// repeatedly (including as a side effect of the getUserMedia churn startStream() itself
+// causes), so calling startStream() unconditionally on every event was the source of the
+// reported video flicker and the repeated "could not confirm" toast. Debounce, and skip
+// entirely when the current stream is still healthy or a device-selection preview is open.
+let deviceChangeDebounceTimer = null;
 navigator.mediaDevices.addEventListener('devicechange', () => {
-   startStream();
+    if (deviceChangeDebounceTimer) clearTimeout(deviceChangeDebounceTimer);
+    deviceChangeDebounceTimer = setTimeout(handleDeviceChange, 750);
 });
+
+async function handleDeviceChange() {
+    if (typeof isDeviceSelectDialogOpen === 'function' && isDeviceSelectDialogOpen()) return;
+    const track = window.currentStream && window.currentStream.getVideoTracks()[0];
+    if (track && track.readyState === 'live') {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const stillPresent = devices.some(d => d.deviceId === track.getSettings().deviceId);
+        if (stillPresent) return; // Healthy stream, ignore the spurious devicechange
+    }
+    await startStream();
+}
 
 /*
     Test-Pattern (Color-Bar) Detection
@@ -1745,6 +2503,62 @@ function setExtraGain(value) {
     }
 }
 
+// AI-assisted addition: video scaling mode, selectable from Settings > Display.
+// 'fill' (default) always stretches to the container width (matches the pre-existing
+// behavior); 'fit' scales down only if the native stream is larger than the viewport,
+// never upscaling; 'native' always shows the video at exact 1:1 pixel size.
+let videoScalingMode = 'fill';
+function setVideoScalingMode(mode) {
+    if (mode !== 'fill' && mode !== 'fit' && mode !== 'native') mode = 'fill';
+    videoScalingMode = mode;
+    const video = document.getElementById('video');
+    if (video) {
+        video.classList.remove('video-scale-fill', 'video-scale-fit', 'video-scale-native');
+        video.classList.add('video-scale-' + mode);
+    }
+    document.body.classList.toggle('video-scroll', mode === 'native');
+    // The video's rendered box size/position just changed - realign the touch-input
+    // overlay (see resizeTouchscreenToVideo()) once the browser has applied the new CSS.
+    requestAnimationFrame(() => {
+        if (typeof resizeTouchscreenToVideo === 'function') resizeTouchscreenToVideo();
+    });
+}
+
+// AI-assisted addition: global saturation/contrast "hack" for capture cards with washed-out
+// or flat colors (see #11 discussion - cheap HDMI-to-USB capture chips can under-saturate
+// some hues, or render a flat, low-contrast image). Applied as a combined CSS filter to both
+// the raw <video> element and the image-sharpening overlay canvas (#sharpenCanvas, see
+// initSharpeningPipeline() below) so it takes effect regardless of whether sharpening is
+// enabled. These are global adjustments, not per-hue/region correction - pushing them too
+// high risks over-saturating or over-contrasting parts of the image that were already fine.
+let colorSaturation = 1.0;
+let colorContrast = 1.0;
+
+function applyVideoFilters() {
+    const parts = [];
+    if (colorSaturation !== 1) parts.push(`saturate(${colorSaturation})`);
+    if (colorContrast !== 1) parts.push(`contrast(${colorContrast})`);
+    const filterValue = parts.length ? parts.join(' ') : 'none';
+    const video = document.getElementById('video');
+    const sharpenCanvas = document.getElementById('sharpenCanvas');
+    if (video) video.style.filter = filterValue;
+    if (sharpenCanvas) sharpenCanvas.style.filter = filterValue;
+}
+
+function setColorSaturation(value) {
+    let sat = parseFloat(value);
+    if (isNaN(sat)) sat = 1.0;
+    colorSaturation = Math.max(0.5, Math.min(3, sat));
+    applyVideoFilters();
+}
+
+function setContrast(value) {
+    let c = parseFloat(value);
+    if (isNaN(c)) c = 1.0;
+    colorContrast = Math.max(0.5, Math.min(3, c));
+    applyVideoFilters();
+}
+
 // Toggle audio enable/disable
 let audioEnabled = true;
 function toggleEnableAudio() {
@@ -1833,6 +2647,14 @@ function toggleCtrlCmdSwap() {
 // Ask on Paste flag (toggled from settings.html)
 let askOnPasteEnabled = false;
 
+// AI-assisted addition: remote keyboard layout used by paste-box.js to translate pasted
+// text into the correct physical keys (see PASTE_LAYOUTS in paste-box.js). Defaults to 'us'
+// so existing behavior is unchanged unless the user explicitly picks a different layout.
+let pasteKeyboardLayout = 'us';
+function setPasteKeyboardLayout(layout) {
+    pasteKeyboardLayout = layout;
+}
+
 // Toggle ask on paste
 function toggleAskOnPaste() {
     const chk = document.getElementById('chkSettingsAskOnPaste');
@@ -1844,7 +2666,7 @@ function toggleAskOnPaste() {
     });
 }
 
-// Toggle mouse jiggler
+// Toggle "Keep Remote Awake" (formerly "mouse jiggler" - now also supports a key-tap method)
 function toggleMouseJiggler() {
     const chk = document.getElementById('chkSettingsMouseJiggler');
     const enabled = chk ? chk.checked : false;
@@ -1853,8 +2675,8 @@ function toggleMouseJiggler() {
     }
     $('body').toast({
         message: enabled
-            ? '<i class="mouse pointer icon"></i> Mouse jiggler enabled (activates after 30 s idle)'
-            : '<i class="mouse pointer icon"></i> Mouse jiggler disabled'
+            ? '<i class="mouse pointer icon"></i> Keep-awake enabled (activates after 30 s idle)'
+            : '<i class="mouse pointer icon"></i> Keep-awake disabled'
     });
 }
 

@@ -1,5 +1,14 @@
 <div class="paste-box">
-    <h3 style="margin-top: 0;">Paste Text to Remote</h3>
+    <div class="paste-box-header">
+        <h3>Paste Text to Remote</h3>
+        <div class="paste-layout-select">
+            <label for="pasteLayoutDropdown">Remote Layout</label>
+            <select id="pasteLayoutDropdown" class="ui dropdown">
+                <option value="us">US (QWERTY)</option>
+                <option value="de">German (QWERTZ)</option>
+            </select>
+        </div>
+    </div>
     <div class="paste-char-counter" id="pasteCharCounter">0 / 1000</div>
     <textarea id="pasteTextarea" placeholder="Enter text to send to remote system..." maxlength="1000"></textarea>
     <div id="pasteProgressBar" class="ui progress" style="display: none;">

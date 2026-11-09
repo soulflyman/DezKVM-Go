@@ -1,0 +1,69 @@
+<!--
+    device-select.html
+
+    AI-assisted addition for GitHub issue #11: a manual "Select Capture Device" dialog with
+    a live preview, for cases where automatic VID:PID detection can't find (or picks the
+    wrong) capture device - e.g. Firefox, which never exposes VID/PID in device labels, or
+    a machine with more than one DezKVM-Go unit plugged in.
+-->
+<style>
+    #deviceSelectModal .device-select-preview-wrap {
+        position: relative;
+        margin-top: 1em;
+        background: #111;
+        border-radius: 4px;
+        overflow: hidden;
+        aspect-ratio: 16 / 9;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    #deviceSelectModal #deviceSelectPreviewVideo {
+        width: 100%;
+        height: 100%;
+        object-fit: contain;
+        background: #111;
+    }
+    #deviceSelectModal #deviceSelectPreviewStatus {
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+        color: #ccc;
+        font-size: 0.9em;
+        padding: 1em;
+        pointer-events: none;
+    }
+    #deviceSelectModal #deviceSelectPreviewStatus:empty {
+        display: none;
+    }
+</style>
+
+<div class="ui modal" id="deviceSelectModal">
+    <div class="header"><i class="video icon"></i> Select Capture Device</div>
+    <div class="content">
+        <p>Choose the video capture device for this session. Useful when auto-detection picks the wrong device, when using multiple DezKVM-Go units on one computer, or on browsers (e.g. Firefox) that don't expose the device's USB VID/PID.</p>
+        <div class="ui form">
+            <div class="field">
+                <label>Video Device</label>
+                <select class="ui fluid dropdown" id="deviceSelectVideoDropdown"></select>
+            </div>
+            <div class="field">
+                <label>Audio Device (optional)</label>
+                <select class="ui fluid dropdown" id="deviceSelectAudioDropdown"></select>
+            </div>
+        </div>
+        <div class="device-select-preview-wrap">
+            <video id="deviceSelectPreviewVideo" autoplay playsinline muted></video>
+            <div id="deviceSelectPreviewStatus"></div>
+        </div>
+    </div>
+    <div class="actions">
+        <div class="ui cancel button"><i class="times icon"></i> Cancel</div>
+        <div class="ui basic button" id="btnClearDeviceSelection"><i class="undo icon"></i> Use Auto-Detect</div>
+        <div class="ui blue basic button" id="btnConfirmDeviceSelection"><i class="check icon"></i> Use This Device</div>
+    </div>
+</div>
+<script src="device-select.js"></script>
